@@ -166,7 +166,7 @@ def builtin_favorites():
 
 
 APP_NAME = "桌面宠物"
-APP_VERSION = "3.9.0"
+APP_VERSION = "3.9.2"
 ACCENT = "#5BB8F5"
 
 # ──── 贴边自动隐藏参数 ────
@@ -562,9 +562,13 @@ class PetWindow(QWidget):
                 # 非头部点击才执行通用 react 和语录。
                 # Live2D 的"关闭（点击不动作）"应当真正屏蔽 click 类动作，而不是只关整窗位移动画。
                 if not head_clicked:
+                    # 养成模式下，点身体只记互动/弹反馈，不驱动 Live2D 点击动作，
+                    # 否则会和好感度气泡、摸头手势感混在一起，看起来像“乱跳”。
                     live2d_click_enabled = (
-                        self.cfg.get("character") != "live2d"
-                        or self.cfg.get("click_action_enabled", True)
+                        not self.cfg.get("nurture_mode", False) and (
+                            self.cfg.get("character") != "live2d"
+                            or self.cfg.get("click_action_enabled", True)
+                        )
                     )
                     if moved:
                         self.renderer.react("drop")
@@ -608,8 +612,10 @@ class PetWindow(QWidget):
                     and not self.cfg.get("nurture_mode", False)
                 )
                 if (not moved and not head_clicked and not click_quote_shown
+                        and not self.cfg.get("nurture_mode", False)
                         and self.cfg.get("click_action_enabled", True)):
-                    # Live2D 角色才播放窗口动作（像素和图片宠物不需要额外动作）
+                    # Live2D 角色才播放窗口动作（像素和图片宠物不需要额外动作）。
+                    # 养成模式下点击是"戳身体"互动（加好感+气泡），不再让整窗"跳"一下。
                     if self.cfg.get("character") == "live2d":
                         self._play_window_action(self.cfg.get("click_action", "hop"))
                 return True
@@ -659,8 +665,8 @@ class PetWindow(QWidget):
     def _pet_cursor(self):
         """构造并缓存"摸头小手"光标。
 
-        目标是"一眼看出是手掌"：正面白手套、四根手指+拇指+袖口，
-        比之前更像卡通角色的手，而不是抽象的花瓣形。"""
+        二次元风格白手套：清晰的手掌+五指，俯视视角，
+        修复大拇指缺口，手指与手掌无缝连接。"""
         if getattr(self, "_pet_cursor_cache", None) is not None:
             return self._pet_cursor_cache
         cur = QCursor(Qt.PointingHandCursor)
@@ -682,62 +688,74 @@ class PetWindow(QWidget):
             p.setPen(edge)
             p.setBrush(hand_color)
 
+            # 用一个整体路径绘制，避免缝隙
             hand = QPainterPath()
-            # 手掌主体
-            hand.addRoundedRect(QRectF(10, 13, 19, 16), 8, 8)
-            # 四根朝上的手指，长度有轻微区别，轮廓更像真实卡通手
-            hand.addRoundedRect(QRectF(9, 4, 5, 12), 2.5, 2.5)    # 食指
-            hand.addRoundedRect(QRectF(14, 2, 5, 14), 2.5, 2.5)   # 中指
-            hand.addRoundedRect(QRectF(19, 3, 5, 13), 2.5, 2.5)   # 无名指
-            hand.addRoundedRect(QRectF(24, 5, 5, 11), 2.5, 2.5)   # 小指
-            # 左侧拇指，做成斜伸出的清晰轮廓
+            
+            # 手掌主体：圆角矩形
+            hand.addRoundedRect(QRectF(10, 13, 20, 16), 7, 7)
+            
+            # 四根手指（食指、中指、无名指、小指）
+            # 指根深入手掌，无缝连接
+            hand.addRoundedRect(QRectF(11, 5, 5, 13), 2.5, 2.5)   # 食指
+            hand.addRoundedRect(QRectF(16, 3, 5, 15), 2.5, 2.5)   # 中指（最长）
+            hand.addRoundedRect(QRectF(21, 4, 5, 14), 2.5, 2.5)   # 无名指
+            hand.addRoundedRect(QRectF(26, 6, 4, 12), 2, 2)       # 小指（最短）
+            
+            # 拇指：用椭圆+矩形组合，完全填充缝隙
+            # 拇指主体（斜向左下）
             thumb = QPainterPath()
-            thumb.moveTo(11, 17)
-            thumb.quadTo(6, 15, 4, 20)
-            thumb.quadTo(3, 24, 7, 26)
-            thumb.quadTo(10, 27, 13, 23)
-            thumb.lineTo(14, 18)
-            thumb.closeSubpath()
+            thumb.addRoundedRect(QRectF(3, 16, 9, 8), 4, 4)
+            # 拇指与手掌的连接区域（填充缝隙）
+            thumb.addEllipse(QRectF(9, 14, 7, 9))
             hand.addPath(thumb)
-            # 袖口，让它更像"手"而不是白色团块
-            hand.addRoundedRect(QRectF(14, 27, 10, 7), 2.2, 2.2)
+            
+            # 袖口
+            hand.addRoundedRect(QRectF(13, 27, 13, 6), 2.5, 2.5)
+            
+            # 简化路径
             hand = hand.simplified()
 
-            # 阴影先画一层，轮廓更立体
+            # 先画阴影
             shadow = QPainterPath(hand)
-            p.fillPath(shadow.translated(1.2, 1.2), QColor(0, 0, 0, 52))
+            p.fillPath(shadow.translated(1.2, 1.2), QColor(0, 0, 0, 50))
+            
+            # 画手套
             p.drawPath(hand)
 
+            # 添加细节
             p.setPen(Qt.NoPen)
 
-            # 掌心高光
-            p.setBrush(QColor(255, 255, 255, 205))
-            p.drawEllipse(QRectF(14, 16, 9, 6))
+            # 掌心大高光
+            p.setBrush(QColor(255, 255, 255, 210))
+            p.drawEllipse(QRectF(14, 16, 10, 6))
+            
             # 指尖高光
-            p.setBrush(QColor(255, 255, 255, 185))
-            for rect in (
-                QRectF(9.8, 5.3, 2.1, 3.0),
-                QRectF(14.8, 3.5, 2.1, 3.1),
-                QRectF(19.8, 4.2, 2.1, 3.0),
-                QRectF(24.8, 6.0, 2.1, 2.8),
-                QRectF(6.2, 19.0, 2.4, 2.0),
-            ):
-                p.drawEllipse(rect)
+            p.setBrush(QColor(255, 255, 255, 190))
+            highlights = [
+                (13, 8),    # 食指
+                (18, 6),    # 中指
+                (23, 7),    # 无名指
+                (27, 9),    # 小指
+                (6, 19),    # 拇指
+            ]
+            for hx, hy in highlights:
+                p.drawEllipse(QRectF(hx, hy, 2.5, 2))
 
-            # 指缝与袖口线，帮轮廓更易辨认
-            guide = QPen(QColor(180, 180, 180, 170))
+            # 指缝分隔线
+            guide = QPen(QColor(200, 200, 200, 150))
             guide.setWidthF(1.0)
             guide.setCapStyle(Qt.RoundCap)
             p.setPen(guide)
-            p.drawLine(QPointF(14, 13.5), QPointF(14, 8.5))
-            p.drawLine(QPointF(19, 12.6), QPointF(19, 7.0))
-            p.drawLine(QPointF(24, 13.0), QPointF(24, 9.0))
-            p.drawLine(QPointF(14.5, 29.5), QPointF(23.5, 29.5))
+            p.drawLine(QPointF(16, 14), QPointF(16, 8))
+            p.drawLine(QPointF(21, 14), QPointF(21, 7))
+            p.drawLine(QPointF(26, 14), QPointF(26, 9))
+            # 袖口线
+            p.drawLine(QPointF(14, 30), QPointF(25, 30))
 
             p.end()
 
-            # 热点放在掌心上沿，摸头时更像"手真正落下去"的位置。
-            cur = QCursor(pm, 20, 16)
+            # 热点在掌心
+            cur = QCursor(pm, 20, 18)
         except Exception:
             pass
         self._pet_cursor_cache = cur
@@ -842,11 +860,11 @@ class PetWindow(QWidget):
         hand.addRoundedRect(QRectF(-1.0 * unit, -9.2 * unit, 4.8 * unit, 11.6 * unit), 2.4 * unit, 2.4 * unit)
         hand.addRoundedRect(QRectF(4.0 * unit, -6.8 * unit, 4.6 * unit, 9.4 * unit), 2.4 * unit, 2.4 * unit)
         thumb = QPainterPath()
-        thumb.moveTo(-9.4 * unit, 5.0 * unit)
-        thumb.quadTo(-14.5 * unit, 3.8 * unit, -15.8 * unit, 8.8 * unit)
-        thumb.quadTo(-16.1 * unit, 12.0 * unit, -12.8 * unit, 13.8 * unit)
-        thumb.quadTo(-9.8 * unit, 14.0 * unit, -7.2 * unit, 10.4 * unit)
-        thumb.lineTo(-6.4 * unit, 5.6 * unit)
+        thumb.moveTo(-8.8 * unit, 3.4 * unit)
+        thumb.quadTo(-14.8 * unit, 2.6 * unit, -16.4 * unit, 7.6 * unit)
+        thumb.quadTo(-17.6 * unit, 11.4 * unit, -14.0 * unit, 13.6 * unit)
+        thumb.quadTo(-10.4 * unit, 15.0 * unit, -7.4 * unit, 11.0 * unit)
+        thumb.quadTo(-6.3 * unit, 8.6 * unit, -6.0 * unit, 4.6 * unit)
         thumb.closeSubpath()
         hand.addPath(thumb)
         hand.addRoundedRect(QRectF(-5.5 * unit, 13.4 * unit, 9.4 * unit, 7.0 * unit), 2.1 * unit, 2.1 * unit)
@@ -864,7 +882,7 @@ class PetWindow(QWidget):
             (-4.8, -8.6, 2.0, 2.9),
             (0.1, -7.8, 2.0, 2.8),
             (4.9, -5.8, 1.9, 2.5),
-            (-13.0, 7.0, 2.2, 1.8),
+            (-14.2, 8.2, 2.2, 1.8),
         ):
             p.drawEllipse(QRectF(hx * unit, hy * unit, hw * unit, hh * unit))
 
@@ -1081,6 +1099,22 @@ class PetWindow(QWidget):
         summary_lay.addStretch(1)
         root.addWidget(summary)
 
+        quick = QFrame()
+        quick.setObjectName("panel")
+        quick_lay = QHBoxLayout(quick)
+        quick_lay.setContentsMargins(10, 8, 10, 8)
+        quick_lay.setSpacing(8)
+        for text, fn in (
+            ("好感度面板", self._show_affinity_panel),
+            ("管理语录", self._manage_quotes),
+            ("TTS 试听", self._tts_preview),
+        ):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            quick_lay.addWidget(b)
+        quick_lay.addStretch(1)
+        root.addWidget(quick)
+
         grid = QGridLayout()
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(10)
@@ -1283,23 +1317,6 @@ class PetWindow(QWidget):
         grid.addWidget(voice_box, 2, 0, 1, 2)
         root.addLayout(grid)
 
-        more = QFrame()
-        more.setObjectName("panel")
-        more_lay = QHBoxLayout(more)
-        more_lay.setContentsMargins(10, 8, 10, 8)
-        more_lay.setSpacing(8)
-        btns = (
-            ("管理语录", self._manage_quotes),
-            ("好感度面板", self._show_affinity_panel),
-            ("TTS 试听", self._tts_preview),
-        )
-        for text, fn in btns:
-            b = QPushButton(text)
-            b.clicked.connect(fn)
-            more_lay.addWidget(b)
-        more_lay.addStretch(1)
-        root.addWidget(more)
-
         close = QPushButton("关闭")
         close.clicked.connect(dlg.accept)
         close_row = QHBoxLayout()
@@ -1323,6 +1340,12 @@ class PetWindow(QWidget):
         if self._slide_timer.isActive() and getattr(self, "_slide_after_hidden", False):
             return False
         return True
+
+    def _suspend_chat_bubble_follow(self):
+        """窗口动作/摸头覆盖动画期间暂停气泡的“重测头部”跟随，避免抢刷新导致抽搐。"""
+        if getattr(self, "_petting_overlay_t", -1.0) >= 0.0:
+            return True
+        return hasattr(self, "_act_timer") and self._act_timer.isActive()
 
     # ------------------------------------------------------------------ #
     #  菜单（右键 + 托盘共用）
@@ -1430,6 +1453,13 @@ class PetWindow(QWidget):
         play_menu.addAction("猜拳（石头剪刀布）…").triggered.connect(self._show_rps_game)
         play_menu.addAction("今日抽签（灵签 / 塔罗）…").triggered.connect(self._show_daily_fortune)
 
+        # ──── 好感度面板：一级入口，养成模式核心功能 ────
+        lvl_name = self._affinity.level_name()
+        pts = self._affinity.data.get("points", 0)
+        a = m.addAction(f"💕 好感度面板（{lvl_name} · {pts}）")
+        a.setToolTip("查看好感值、今日收益、连续登录、累计摸头，并设置专属称呼")
+        a.triggered.connect(self._show_affinity_panel)
+
         m.addSeparator()
 
         # ──── 聊天气泡设置 ────
@@ -1468,13 +1498,6 @@ class PetWindow(QWidget):
         a.setChecked(self.cfg.get("nurture_mode", False))
         a.setToolTip("好感度养成（伴侣模式升级版）：摸头/陪伴升好感，称呼与台词随 5 档层级变化")
         a.triggered.connect(self._toggle_nurture_mode)
-        mode_menu.addSeparator()
-        # 好感度记录面板
-        lvl_name = self._affinity.level_name()
-        pts = self._affinity.data.get("points", 0)
-        a = mode_menu.addAction("好感度面板…（%s · %d）" % (lvl_name, pts))
-        a.setToolTip("查看好感值、今日收益、连续登录、累计摸头，并设置专属称呼")
-        a.triggered.connect(self._show_affinity_panel)
         chat_menu.addAction("随机说一句").triggered.connect(lambda: self._chat_manager.say())
         chat_menu.addAction("管理语录...").triggered.connect(self._manage_quotes)
 
@@ -1592,17 +1615,22 @@ class PetWindow(QWidget):
 
         # 点击宠物时触发的动作：可换成别的动作，或关闭（点击不再"跳"）
         click_sub = win_sub.addMenu("点击宠物时")
-        enabled = self.cfg.get("click_action_enabled", True)
+        enabled = (self.cfg.get("click_action_enabled", True)
+                   and not self.cfg.get("nurture_mode", False))
         cur_click = self.cfg.get("click_action", "hop")
         off = click_sub.addAction("关闭（点击不动作）")
         off.setCheckable(True)
         off.setChecked(not enabled)
+        if self.cfg.get("nurture_mode", False):
+            off.setText("关闭（养成模式下点击不动作）")
         off.triggered.connect(lambda _=False: self._set_click_action(None))
         click_sub.addSeparator()
         for key, label in ACTION_ITEMS:
             a = click_sub.addAction(label)
             a.setCheckable(True)
             a.setChecked(enabled and cur_click == key)
+            if self.cfg.get("nurture_mode", False):
+                a.setEnabled(False)
             a.triggered.connect(lambda _=False, k=key: self._set_click_action(k))
 
         win_sub.addSeparator()
@@ -2266,6 +2294,13 @@ class PetWindow(QWidget):
         # 若上一个动作还在跑，沿用它的起点，避免连点导致窗口越跳越偏
         if not (self._act_timer.isActive() and self._act_home is not None):
             self._act_home = self.pos()
+            # 记录气泡初始位置，用于动画过程中的相对偏移
+            if hasattr(self, "_chat_bubble") and self._chat_bubble.isVisible():
+                self._chat_bubble._last_bubble_pos = (self._chat_bubble.x(), self._chat_bubble.y())
+                # 暂停气泡的自动跟随，避免在动画期间调用 refresh_content_box 影响性能
+                if hasattr(self._chat_bubble, "_follow_timer") and self._chat_bubble._follow_timer.isActive():
+                    self._chat_bubble._follow_timer.stop()
+                    self._chat_bubble._follow_paused = True
         self._act_name = name
         self._act_t = 0.0
         self._act_dur = ACTION_DUR.get(name, 0.7)
@@ -2273,10 +2308,19 @@ class PetWindow(QWidget):
             self._act_timer.start(33)
 
     def _cancel_action(self):
-        if self._act_timer.isActive():
+        if hasattr(self, "_act_timer") and self._act_timer.isActive():
             self._act_timer.stop()
         self._act_name = None
         self._act_home = None
+        # 清理气泡位置缓存并恢复自动跟随
+        if hasattr(self, "_chat_bubble"):
+            if hasattr(self._chat_bubble, "_last_bubble_pos"):
+                delattr(self._chat_bubble, "_last_bubble_pos")
+            # 恢复气泡的自动跟随定时器
+            if getattr(self._chat_bubble, "_follow_paused", False):
+                self._chat_bubble._follow_paused = False
+                if hasattr(self._chat_bubble, "_follow_timer") and self._chat_bubble.isVisible():
+                    self._chat_bubble._follow_timer.start(self._chat_bubble._follow_interval)
 
     def _act_tick(self):
         if (self._act_name is None or self._act_home is None
@@ -2287,11 +2331,26 @@ class PetWindow(QWidget):
         hx, hy = self._act_home.x(), self._act_home.y()
         if self._act_t >= 1.0:
             self.move(hx, self._clamp_y(hy))      # 回到起点
+            # 动画结束时更新气泡位置
+            if hasattr(self, "_chat_bubble") and self._chat_bubble.isVisible():
+                self._chat_bubble.update_position()
             self._cancel_action()
             self._save_pos()
             return
         dx, dy = self._action_offset(self._act_name, self._act_t)
-        self.move(hx + int(round(dx)), self._clamp_y(hy + int(round(dy))))
+        new_y = self._clamp_y(hy + int(round(dy)))
+        self.move(hx + int(round(dx)), new_y)
+        # 动画过程中使用轻量级的位置同步，只让气泡跟随宠物偏移，避免每帧重新计算
+        if hasattr(self, "_chat_bubble") and self._chat_bubble.isVisible():
+            # 直接计算气泡应该移动的偏移量，不重新计算智能定位
+            bubble_dx = int(round(dx))
+            bubble_dy = new_y - hy  # 使用实际移动的y偏移（考虑了clamp）
+            if hasattr(self._chat_bubble, "_last_bubble_pos"):
+                base_x, base_y = self._chat_bubble._last_bubble_pos
+            else:
+                base_x, base_y = self._chat_bubble.x(), self._chat_bubble.y()
+                self._chat_bubble._last_bubble_pos = (base_x, base_y)
+            self._chat_bubble.move(base_x + bubble_dx, base_y + bubble_dy)
 
     def _action_offset(self, name, p):
         """动作在窗口像素上的 (dx, dy) 偏移；按模型大小等比缩放。"""
@@ -3795,7 +3854,9 @@ class PetWindow(QWidget):
         # 拖动时每个 move 事件都同步是白费功夫，会拖慢跟手。
         if getattr(self, "_petting_overlay_t", -1.0) >= 0.0 and hasattr(self, "_petting_overlay"):
             self._petting_overlay.sync_geometry()
+        # 动画播放期间跳过气泡更新，由 _act_tick 统一处理；避免每帧 moveEvent 触发重复的智能定位计算
         if (self._drag_off is None and self._drag_candidate_off is None
+                and not (hasattr(self, "_act_timer") and self._act_timer.isActive())  # 动画期间不在这里更新
                 and hasattr(self, "_chat_bubble") and self._chat_bubble.isVisible()):
             self._chat_bubble.update_position()
 

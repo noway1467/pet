@@ -608,6 +608,14 @@ class SmartChatBubble(QWidget):
             self._follow_timer.stop()
             return
         parent = self.parent()
+        suspend = getattr(parent, "_suspend_chat_bubble_follow", None)
+        if callable(suspend):
+            try:
+                if suspend():
+                    self._smart_position(self.width(), self.height())
+                    return
+            except Exception:
+                pass
         refresh = getattr(parent, "refresh_content_box", None)
         if callable(refresh):
             try:

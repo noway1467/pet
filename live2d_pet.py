@@ -283,6 +283,7 @@ class _Live2DGL(QOpenGLWidget):
         self._motion_cooldown_duration = 2.0  # 一个待机动作放完后，至少隔这么久再换下一个（太频繁会卡顿/闪烁）
         self._errored = False          # 渲染出错后只回调一次
         self._content_box = None       # 缓存的内容包围盒(归一化 x0,y0,x1,y1)，供"模型碰到边缘"判定
+        self._last_grab_img = None     # 显示层最近一帧抓取的 framebuffer，供 refresh_content_box 复用(避免额外抓帧)
         self._mask_region = None       # 按 alpha 生成的控件形状，裁掉 OpenGL 透明区黑底
         self._mask_stamp = 0.0
         self._last_opaque_black_bg = False
@@ -795,12 +796,16 @@ class _Live2DGL(QOpenGLWidget):
         return True
 
     # --- 贴合内容：测量真实渲染范围，让画布严格包住模型（去掉大片空白）---
-    def _measure_content(self):
-        """抓当前帧，返回非透明内容的归一化包围盒 (x0,y0,x1,y1)；失败返回 None。"""
-        try:
-            img = self.grabFramebuffer()
-        except Exception:
-            return None
+    def _measure_content(self, img=None):
+        """返回非透明内容的归一化包围盒 (x0,y0,x1,y1)；失败返回 None。
+
+        img=None 时主动抓一帧测量（fit_to_content 迭代收敛需要实时帧）；传入已有
+        framebuffer 时复用它——气泡跟随头部时就走这条路，避免额外触发离屏渲染。"""
+        if img is None:
+            try:
+                img = self.grabFramebuffer()
+            except Exception:
+                return None
         if img is None or img.isNull():
             return None
         try:
@@ -1635,6 +1640,7 @@ class Live2DPet(QWidget):
             return
         if img is None or img.isNull():
             return
+        gl._last_grab_img = img          # 供 refresh_content_box 复用，避免气泡跟随时额外抓帧
         w = max(1, self.width())
         dpr = img.width() / float(w)
         if dpr > 0:
@@ -1669,6 +1675,26 @@ class Live2DPet(QWidget):
         if self.size() != sz:
             self.setFixedSize(sz)
         self.update()
+
+    def refresh_content_box(self):
+        """重测内容包围盒，但**复用最近一帧已抓取的 framebuffer**，不再独立触发离屏渲染。
+
+        气泡显示时每 ~120ms 跟随头部高度都会调用这里；旧实现会清空缓存并在下次
+        content_inset() 时再 grabFramebuffer()，等于在 30fps 渲染之外又插进一串
+        抓帧+numpy，抢 GUI 线程导致模型动作抽搐。改为直接用显示层刚抓到的帧测量，
+        无额外渲染、无冲突。没有可复用帧时退回惰性重测（下次 content_inset 再抓）。"""
+        gl = self._gl
+        if gl is None:
+            return
+        img = getattr(gl, "_last_grab_img", None)
+        if img is not None and not img.isNull():
+            box = gl._measure_content(img)
+            if box is not None:
+                gl._content_box = box
+                gl._mask_region = None
+                return
+        gl._content_box = None
+        gl._mask_region = None
 
     # ---------- 尺寸/构图：离屏画布变了要同步本控件 ----------
     def natural_size(self):
