@@ -1,0 +1,58 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "Takodachi.moc3",
+		"Textures": [
+			"Takodachi.2048/texture_00.png"
+		],
+		"Physics": "Takodachi.physics3.json",
+		"DisplayInfo": "Takodachi.cdi3.json",
+		"Expressions": [
+			{
+				"Name": "expression1",
+				"File": "Muscles.exp3.json"
+			},
+			{
+				"Name": "expression2",
+				"File": "feet.exp3.json"
+			},
+			{
+				"Name": "expression3",
+				"File": "thickodachi.exp3.json"
+			},
+			{
+				"Name": "Blush",
+				"File": "Blush.exp3.json"
+			},
+			{
+				"Name": "Eyes Open",
+				"File": "Eyes Open.exp3.json"
+			},
+			{
+				"Name": "Plead",
+				"File": "Plead.exp3.json"
+			},
+			{
+				"Name": "blanket",
+				"File": "blanket.exp3.json"
+			},
+			{
+				"Name": "mug",
+				"File": "mug.exp3.json"
+			}
+		]
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": []
+		},
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": []
+		}
+	],
+	"HitAreas": []
+}

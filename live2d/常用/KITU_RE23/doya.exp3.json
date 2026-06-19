@@ -1,0 +1,85 @@
+{
+    "Type": "Live2D Expression",
+    "Parameters": [
+        {
+            "Id": "ParamEyeLSmile",
+            "Value": 0.800000011920929,
+            "Blend": "Add"
+        },
+        {
+            "Id": "ParamEyeRSmile",
+            "Value": 0.800000011920929,
+            "Blend": "Add"
+        },
+        {
+            "Id": "ParamBrowLAngle",
+            "Value": -0.699999988079071,
+            "Blend": "Add"
+        },
+        {
+            "Id": "ParamBrowRAngle",
+            "Value": -0.699999988079071,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param23",
+            "Value": 1.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "ParamCheek2",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "ParamCheek",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param18",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param19",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param20",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param21",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param22",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "ParamCheek3",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param35",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param36",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param39",
+            "Value": 0.0,
+            "Blend": "Add"
+        }
+    ]
+}
