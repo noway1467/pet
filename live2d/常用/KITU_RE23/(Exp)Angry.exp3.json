@@ -1,0 +1,90 @@
+{
+    "Type": "Live2D Expression",
+    "Parameters": [
+        {
+            "Id": "ParamBrowLAngle",
+            "Value": -0.9968745112419128,
+            "Blend": "Add"
+        },
+        {
+            "Id": "ParamBrowLForm",
+            "Value": -0.38105809688568118,
+            "Blend": "Add"
+        },
+        {
+            "Id": "ParamBrowRAngle",
+            "Value": -1.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "ParamBrowRForm",
+            "Value": -0.3878630995750427,
+            "Blend": "Add"
+        },
+        {
+            "Id": "ParamMouthForm",
+            "Value": -1.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param23",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "ParamCheek2",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "ParamCheek",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param18",
+            "Value": 0.19733360409736634,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param19",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param20",
+            "Value": 1.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param21",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param22",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "ParamCheek3",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param35",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param36",
+            "Value": 0.0,
+            "Blend": "Add"
+        },
+        {
+            "Id": "Param39",
+            "Value": 0.0,
+            "Blend": "Add"
+        }
+    ]
+}

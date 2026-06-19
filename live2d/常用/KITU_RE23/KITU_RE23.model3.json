@@ -1,0 +1,34 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "KITU_RE23.moc3",
+		"Textures": [
+			"KITU_RE23.4096/texture_00.png",
+			"KITU_RE23.4096/texture_01.png",
+			"KITU_RE23.4096/texture_02.png",
+			"KITU_RE23.4096/texture_03.png"
+		],
+		"Physics": "KITU_RE23.physics3.json",
+		"DisplayInfo": "KITU_RE23.cdi3.json"
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": [
+				"ParamEyeLOpen",
+				"ParamEyeLSmile",
+				"ParamEyeROpen",
+				"ParamEyeRSmile"
+			]
+		},
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": [
+				"ParamMouthForm",
+				"ParamMouthOpenY"
+			]
+		}
+	]
+}

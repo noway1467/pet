@@ -1,0 +1,27 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "Usa Maid.moc3",
+		"Textures": [
+			"Usa Maid.8192/texture_00.png"
+		],
+		"Physics": "Usa Maid.physics3.json",
+		"DisplayInfo": "Usa Maid.cdi3.json"
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": []
+		},
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": [
+				"ParamEyeLOpen",
+				"ParamEyeROpen",
+				"Param7"
+			]
+		}
+	]
+}

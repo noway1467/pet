@@ -1,0 +1,26 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "VT_student.moc3",
+		"Textures": [
+			"VT_student.4096/texture_00.png",
+			"VT_student.4096/texture_01.png",
+			"VT_student.4096/texture_02.png",
+			"VT_student.4096/texture_03.png",
+			"VT_student.4096/texture_04.png"
+		],
+		"DisplayInfo": "VT_student.cdi3.json"
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": []
+		},
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": []
+		}
+	]
+}

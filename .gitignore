@@ -8,7 +8,7 @@ build/
 *.log
 _tmp_clean_cfg/
 .claude/
-live2d/
+
 desktop_capture.png
 live2d_framebuffer_*debug.png
 verify_*desktop.png
