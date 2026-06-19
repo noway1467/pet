@@ -93,3 +93,16 @@ python main.py
 * 本项目的 UI 框架基于 **PySide6** 构建。
 * Live2D 相关的解析和渲染依赖于开源社区的 `live2d-py` 扩展。
 * 项目中附带的部分内置图像、模型素材版权归原作者或原出处所有，仅供学习、测试使用。
+
+---
+
+## 🎁 更多 Live2D 模型下载
+
+本项目兼容绝大多数标准的 Live2D 模型。如果你需要更多好看的宠物模型，可以前往以下开源仓库或模型分享网站进行下载：
+
+* [imuncle/live2d (GitHub 开源模型整理)](https://github.com/imuncle/live2d)
+* [Eikanya/Live2d-model (GitHub 海量游戏模型提取)](https://github.com/Eikanya/Live2d-model)
+* [Booth 免费 Live2D 模型 (需要科学上网)](https://booth.pm/zh-cn/search/Live2D?price_max=0)
+
+**💡 如何使用新模型：**
+下载后解压，将整个模型文件夹（内部包含 `.model.json` 或 `.model3.json` 即可）直接复制到本项目的 `live2d` 文件夹下。重启软件或在右键菜单的“选择 Live2D 模型”中即可找到并应用。
