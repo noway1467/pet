@@ -1,0 +1,802 @@
+{
+  "chiaki_kitty": [
+    {
+      "group": "tap",
+      "index": 0,
+      "sound_file": "motions/tap/chiaki_kitty_hello_01.mp3",
+      "translation": "叫我吗？"
+    },
+    {
+      "group": "tap",
+      "index": 1,
+      "sound_file": "motions/tap/chiaki_kitty_joyful_01.mp3",
+      "translation": "嗯？"
+    },
+    {
+      "group": "tap",
+      "index": 2,
+      "sound_file": "motions/tap/chiaki_kitty_surprise_01.mp3",
+      "translation": "在听呢~"
+    }
+  ],
+  "izumi": [
+    {
+      "group": "null",
+      "index": 0,
+      "sound_file": "snd/izumi_01.mp3",
+      "translation": "啊~"
+    },
+    {
+      "group": "null",
+      "index": 1,
+      "sound_file": "snd/izumi_02.mp3",
+      "translation": "啊~"
+    },
+    {
+      "group": "null",
+      "index": 2,
+      "sound_file": "snd/izumi_03.mp3",
+      "translation": "呀~"
+    },
+    {
+      "group": "null",
+      "index": 3,
+      "sound_file": "snd/izumi_04.mp3",
+      "translation": "呀~"
+    },
+    {
+      "group": "null",
+      "index": 4,
+      "sound_file": "snd/izumi_05.mp3",
+      "translation": "啊~"
+    },
+    {
+      "group": "null",
+      "index": 5,
+      "sound_file": "snd/izumi_06.mp3",
+      "translation": "呀~"
+    },
+    {
+      "group": "null",
+      "index": 6,
+      "sound_file": "snd/izumi_07.mp3",
+      "translation": "呀~"
+    },
+    {
+      "group": "null",
+      "index": 7,
+      "sound_file": "snd/izumi_08.mp3",
+      "translation": "嗯~"
+    },
+    {
+      "group": "null",
+      "index": 8,
+      "sound_file": "snd/izumi_09.mp3",
+      "translation": "啊~"
+    },
+    {
+      "group": "null",
+      "index": 9,
+      "sound_file": "snd/izumi_10.mp3",
+      "translation": "啊~"
+    }
+  ],
+  "katou_01": [
+    {
+      "group": "pinch_in",
+      "index": 0,
+      "sound_file": "voice/1.mp3",
+      "translation": "嘿~"
+    }
+  ],
+  "mei": [
+    {
+      "group": "shake",
+      "index": 0,
+      "sound_file": "sounds/mei_live2d_001.wav",
+      "translation": "好晕~"
+    },
+    {
+      "group": "flick_head",
+      "index": 0,
+      "sound_file": "sounds/mei_live2d_003.wav",
+      "translation": "别弹了~"
+    },
+    {
+      "group": "tap_face",
+      "index": 0,
+      "sound_file": "sounds/mei_live2d_004.wav",
+      "translation": "叫我吗？"
+    },
+    {
+      "group": "tap_breast",
+      "index": 0,
+      "sound_file": "sounds/mei_live2d_002.wav",
+      "translation": "在听呢~"
+    },
+    {
+      "group": "tap_belly",
+      "index": 0,
+      "sound_file": "sounds/mei_live2d_006.wav",
+      "translation": "怎么了呀~"
+    },
+    {
+      "group": "tap_leg",
+      "index": 0,
+      "sound_file": "sounds/mei_live2d_007.wav",
+      "translation": "怎么了呀~"
+    },
+    {
+      "group": "born",
+      "index": 0,
+      "sound_file": "sounds/mei_live2d_007.wav",
+      "translation": "嘿~"
+    }
+  ],
+  "rem": [
+    {
+      "group": "start",
+      "index": 0,
+      "sound_file": "voice/26.wav",
+      "translation": "呀~"
+    },
+    {
+      "group": "tap_head",
+      "index": 0,
+      "sound_file": "voice/01.wav",
+      "translation": "再摸摸~"
+    },
+    {
+      "group": "tap_head",
+      "index": 1,
+      "sound_file": "voice/02.wav",
+      "translation": "好舒服呀~"
+    },
+    {
+      "group": "tap_head",
+      "index": 2,
+      "sound_file": "voice/03.wav",
+      "translation": "喜欢被摸头~"
+    },
+    {
+      "group": "tap_head",
+      "index": 3,
+      "sound_file": "voice/04.wav",
+      "translation": "嘿嘿~"
+    },
+    {
+      "group": "tap_head",
+      "index": 4,
+      "sound_file": "voice/05.wav",
+      "translation": "好舒服呀~"
+    },
+    {
+      "group": "tap_head",
+      "index": 5,
+      "sound_file": "voice/21.wav",
+      "translation": "再摸摸~"
+    },
+    {
+      "group": "tap_head",
+      "index": 6,
+      "sound_file": "voice/22.wav",
+      "translation": "再摸摸~"
+    },
+    {
+      "group": "tap_head",
+      "index": 7,
+      "sound_file": "voice/23.wav",
+      "translation": "好舒服呀~"
+    },
+    {
+      "group": "tap_head",
+      "index": 8,
+      "sound_file": "voice/24.wav",
+      "translation": "再摸摸~"
+    },
+    {
+      "group": "tap_head",
+      "index": 9,
+      "sound_file": "voice/25.wav",
+      "translation": "喜欢被摸头~"
+    },
+    {
+      "group": "pinch_in",
+      "index": 0,
+      "sound_file": "voice/06.wav",
+      "translation": "嘿~"
+    },
+    {
+      "group": "pinch_in",
+      "index": 1,
+      "sound_file": "voice/07.wav",
+      "translation": "嘿~"
+    },
+    {
+      "group": "pinch_in",
+      "index": 2,
+      "sound_file": "voice/08.wav",
+      "translation": "呀~"
+    },
+    {
+      "group": "pinch_in",
+      "index": 3,
+      "sound_file": "voice/09.wav",
+      "translation": "啊~"
+    },
+    {
+      "group": "pinch_in",
+      "index": 4,
+      "sound_file": "voice/10.wav",
+      "translation": "嗯~"
+    },
+    {
+      "group": "pinch_in",
+      "index": 5,
+      "sound_file": "voice/11.wav",
+      "translation": "嗯~"
+    },
+    {
+      "group": "pinch_in",
+      "index": 6,
+      "sound_file": "voice/12.wav",
+      "translation": "啊~"
+    },
+    {
+      "group": "pinch_in",
+      "index": 7,
+      "sound_file": "voice/13.wav",
+      "translation": "嗯~"
+    },
+    {
+      "group": "pinch_in",
+      "index": 8,
+      "sound_file": "voice/14.wav",
+      "translation": "嘿~"
+    },
+    {
+      "group": "pinch_in",
+      "index": 9,
+      "sound_file": "voice/15.wav",
+      "translation": "呀~"
+    },
+    {
+      "group": "pinch_in",
+      "index": 10,
+      "sound_file": "voice/16.wav",
+      "translation": "嘿~"
+    },
+    {
+      "group": "pinch_in",
+      "index": 11,
+      "sound_file": "voice/17.wav",
+      "translation": "啊~"
+    },
+    {
+      "group": "pinch_in",
+      "index": 12,
+      "sound_file": "voice/18.wav",
+      "translation": "啊~"
+    },
+    {
+      "group": "pinch_in",
+      "index": 13,
+      "sound_file": "voice/19.wav",
+      "translation": "嘿~"
+    },
+    {
+      "group": "pinch_in",
+      "index": 14,
+      "sound_file": "voice/20.wav",
+      "translation": "嗯~"
+    },
+    {
+      "group": "tap_body",
+      "index": 0,
+      "sound_file": "voice/01.wav",
+      "translation": "嗯？"
+    },
+    {
+      "group": "tap_body",
+      "index": 1,
+      "sound_file": "voice/02.wav",
+      "translation": "怎么了？"
+    },
+    {
+      "group": "tap_body",
+      "index": 2,
+      "sound_file": "voice/03.wav",
+      "translation": "怎么了？"
+    },
+    {
+      "group": "tap_body",
+      "index": 3,
+      "sound_file": "voice/04.wav",
+      "translation": "嗯？"
+    },
+    {
+      "group": "tap_body",
+      "index": 4,
+      "sound_file": "voice/05.wav",
+      "translation": "嗯？"
+    },
+    {
+      "group": "tap_body",
+      "index": 5,
+      "sound_file": "voice/21.wav",
+      "translation": "怎么了？"
+    },
+    {
+      "group": "tap_body",
+      "index": 6,
+      "sound_file": "voice/22.wav",
+      "translation": "在呢~"
+    },
+    {
+      "group": "tap_body",
+      "index": 7,
+      "sound_file": "voice/23.wav",
+      "translation": "在呢~"
+    },
+    {
+      "group": "tap_body",
+      "index": 8,
+      "sound_file": "voice/24.wav",
+      "translation": "怎么了？"
+    },
+    {
+      "group": "tap_body",
+      "index": 9,
+      "sound_file": "voice/25.wav",
+      "translation": "怎么了？"
+    }
+  ],
+  "shizuku": [
+    {
+      "group": "tap_body",
+      "index": 0,
+      "sound_file": "sounds/tapBody_00.mp3",
+      "translation": "找我吗？"
+    },
+    {
+      "group": "tap_body",
+      "index": 1,
+      "sound_file": "sounds/tapBody_01.mp3",
+      "translation": "找我吗？"
+    },
+    {
+      "group": "tap_body",
+      "index": 2,
+      "sound_file": "sounds/tapBody_02.mp3",
+      "translation": "嗯？"
+    },
+    {
+      "group": "pinch_in",
+      "index": 0,
+      "sound_file": "sounds/pinchIn_00.mp3",
+      "translation": "呀~"
+    },
+    {
+      "group": "pinch_in",
+      "index": 1,
+      "sound_file": "sounds/pinchIn_01.mp3",
+      "translation": "啊~"
+    },
+    {
+      "group": "pinch_in",
+      "index": 2,
+      "sound_file": "sounds/pinchIn_02.mp3",
+      "translation": "呀~"
+    },
+    {
+      "group": "pinch_out",
+      "index": 0,
+      "sound_file": "sounds/pinchOut_00.mp3",
+      "translation": "嘿~"
+    },
+    {
+      "group": "pinch_out",
+      "index": 1,
+      "sound_file": "sounds/pinchOut_01.mp3",
+      "translation": "嗯~"
+    },
+    {
+      "group": "pinch_out",
+      "index": 2,
+      "sound_file": "sounds/pinchOut_02.mp3",
+      "translation": "嗯~"
+    },
+    {
+      "group": "shake",
+      "index": 0,
+      "sound_file": "sounds/shake_00.mp3",
+      "translation": "别晃啦~"
+    },
+    {
+      "group": "shake",
+      "index": 1,
+      "sound_file": "sounds/shake_01.mp3",
+      "translation": "哎呀~"
+    },
+    {
+      "group": "shake",
+      "index": 2,
+      "sound_file": "sounds/shake_02.mp3",
+      "translation": "别晃啦~"
+    },
+    {
+      "group": "flick_head",
+      "index": 0,
+      "sound_file": "sounds/flickHead_00.mp3",
+      "translation": "哎哟~"
+    },
+    {
+      "group": "flick_head",
+      "index": 1,
+      "sound_file": "sounds/flickHead_01.mp3",
+      "translation": "别弹了~"
+    },
+    {
+      "group": "flick_head",
+      "index": 2,
+      "sound_file": "sounds/flickHead_02.mp3",
+      "translation": "疼疼疼~"
+    }
+  ],
+  "xiaomai": [
+    {
+      "group": "start",
+      "index": 0,
+      "sound_file": "voice/03.wav",
+      "translation": "呀~"
+    },
+    {
+      "group": "start",
+      "index": 1,
+      "sound_file": "voice/26.wav",
+      "translation": "嗯~"
+    },
+    {
+      "group": "start",
+      "index": 2,
+      "sound_file": "voice/01.wav",
+      "translation": "呀~"
+    },
+    {
+      "group": "start",
+      "index": 3,
+      "sound_file": "voice/02.wav",
+      "translation": "啊~"
+    },
+    {
+      "group": "start",
+      "index": 4,
+      "sound_file": "voice/03.wav",
+      "translation": "嘿~"
+    },
+    {
+      "group": "start",
+      "index": 5,
+      "sound_file": "voice/04.wav",
+      "translation": "啊~"
+    },
+    {
+      "group": "start",
+      "index": 6,
+      "sound_file": "voice/05.wav",
+      "translation": "啊~"
+    },
+    {
+      "group": "start",
+      "index": 7,
+      "sound_file": "voice/06.wav",
+      "translation": "嘿~"
+    },
+    {
+      "group": "start",
+      "index": 8,
+      "sound_file": "voice/07.wav",
+      "translation": "啊~"
+    },
+    {
+      "group": "start",
+      "index": 9,
+      "sound_file": "voice/08.wav",
+      "translation": "嗯~"
+    },
+    {
+      "group": "start",
+      "index": 10,
+      "sound_file": "voice/09.wav",
+      "translation": "嘿~"
+    },
+    {
+      "group": "start",
+      "index": 11,
+      "sound_file": "voice/10.wav",
+      "translation": "嗯~"
+    },
+    {
+      "group": "tap_head",
+      "index": 0,
+      "sound_file": "voice/27.wav",
+      "translation": "喜欢被摸头~"
+    },
+    {
+      "group": "tap_head",
+      "index": 1,
+      "sound_file": "voice/28.wav",
+      "translation": "好舒服呀~"
+    },
+    {
+      "group": "tap_head",
+      "index": 2,
+      "sound_file": "voice/29.wav",
+      "translation": "喜欢被摸头~"
+    },
+    {
+      "group": "tap_head",
+      "index": 3,
+      "sound_file": "voice/30.wav",
+      "translation": "再摸摸~"
+    },
+    {
+      "group": "tap_head",
+      "index": 4,
+      "sound_file": "voice/31.wav",
+      "translation": "喜欢被摸头~"
+    },
+    {
+      "group": "tap_head",
+      "index": 5,
+      "sound_file": "voice/32.wav",
+      "translation": "好舒服呀~"
+    },
+    {
+      "group": "tap_head",
+      "index": 6,
+      "sound_file": "voice/33.wav",
+      "translation": "嘿嘿~"
+    },
+    {
+      "group": "tap_head",
+      "index": 7,
+      "sound_file": "voice/34.wav",
+      "translation": "好舒服呀~"
+    },
+    {
+      "group": "tap_head",
+      "index": 8,
+      "sound_file": "voice/34.wav",
+      "translation": "喜欢被摸头~"
+    },
+    {
+      "group": "tap_head",
+      "index": 9,
+      "sound_file": "voice/21.wav",
+      "translation": "好舒服呀~"
+    },
+    {
+      "group": "tap_head",
+      "index": 10,
+      "sound_file": "voice/22.wav",
+      "translation": "再摸摸~"
+    },
+    {
+      "group": "tap_head",
+      "index": 11,
+      "sound_file": "voice/23.wav",
+      "translation": "好舒服呀~"
+    },
+    {
+      "group": "tap_head",
+      "index": 12,
+      "sound_file": "voice/24.wav",
+      "translation": "再摸摸~"
+    },
+    {
+      "group": "tap_head",
+      "index": 13,
+      "sound_file": "voice/25.wav",
+      "translation": "喜欢被摸头~"
+    },
+    {
+      "group": "tap_head",
+      "index": 14,
+      "sound_file": "voice/26.wav",
+      "translation": "再摸摸~"
+    },
+    {
+      "group": "tap_body",
+      "index": 0,
+      "sound_file": "voice/11.wav",
+      "translation": "在呢~"
+    },
+    {
+      "group": "tap_body",
+      "index": 1,
+      "sound_file": "voice/12.wav",
+      "translation": "怎么了？"
+    },
+    {
+      "group": "tap_body",
+      "index": 2,
+      "sound_file": "voice/13.wav",
+      "translation": "在呢~"
+    },
+    {
+      "group": "tap_body",
+      "index": 3,
+      "sound_file": "voice/14.wav",
+      "translation": "怎么了？"
+    },
+    {
+      "group": "tap_body",
+      "index": 4,
+      "sound_file": "voice/15.wav",
+      "translation": "嗯？"
+    },
+    {
+      "group": "tap_body",
+      "index": 5,
+      "sound_file": "voice/16.wav",
+      "translation": "找我吗？"
+    },
+    {
+      "group": "tap_body",
+      "index": 6,
+      "sound_file": "voice/17.wav",
+      "translation": "在呢~"
+    },
+    {
+      "group": "tap_body",
+      "index": 7,
+      "sound_file": "voice/18.wav",
+      "translation": "嗯？"
+    },
+    {
+      "group": "tap_body",
+      "index": 8,
+      "sound_file": "voice/19.wav",
+      "translation": "找我吗？"
+    },
+    {
+      "group": "tap_body",
+      "index": 9,
+      "sound_file": "voice/20.wav",
+      "translation": "在呢~"
+    },
+    {
+      "group": "shake",
+      "index": 0,
+      "sound_file": "voice/21.wav",
+      "translation": "哎呀~"
+    },
+    {
+      "group": "shake",
+      "index": 1,
+      "sound_file": "voice/22.wav",
+      "translation": "好晕~"
+    },
+    {
+      "group": "shake",
+      "index": 2,
+      "sound_file": "voice/23.wav",
+      "translation": "别晃啦~"
+    },
+    {
+      "group": "shake",
+      "index": 3,
+      "sound_file": "voice/24.wav",
+      "translation": "好晕~"
+    },
+    {
+      "group": "shake",
+      "index": 4,
+      "sound_file": "voice/25.wav",
+      "translation": "别晃啦~"
+    },
+    {
+      "group": "shake",
+      "index": 5,
+      "sound_file": "voice/26.wav",
+      "translation": "别晃啦~"
+    },
+    {
+      "group": "random",
+      "index": 0,
+      "sound_file": "voice/27.wav",
+      "translation": "呀~"
+    },
+    {
+      "group": "random",
+      "index": 1,
+      "sound_file": "voice/28.wav",
+      "translation": "啊~"
+    },
+    {
+      "group": "random",
+      "index": 2,
+      "sound_file": "voice/29.wav",
+      "translation": "啊~"
+    },
+    {
+      "group": "random",
+      "index": 3,
+      "sound_file": "voice/30.wav",
+      "translation": "啊~"
+    },
+    {
+      "group": "random",
+      "index": 4,
+      "sound_file": "voice/31.wav",
+      "translation": "嘿~"
+    },
+    {
+      "group": "random",
+      "index": 5,
+      "sound_file": "voice/32.wav",
+      "translation": "啊~"
+    },
+    {
+      "group": "random",
+      "index": 6,
+      "sound_file": "voice/33.wav",
+      "translation": "呀~"
+    },
+    {
+      "group": "random",
+      "index": 7,
+      "sound_file": "voice/34.wav",
+      "translation": "啊~"
+    },
+    {
+      "group": "random",
+      "index": 8,
+      "sound_file": "voice/34.wav",
+      "translation": "嘿~"
+    },
+    {
+      "group": "random",
+      "index": 9,
+      "sound_file": "voice/21.wav",
+      "translation": "嗯~"
+    },
+    {
+      "group": "random",
+      "index": 10,
+      "sound_file": "voice/22.wav",
+      "translation": "嗯~"
+    },
+    {
+      "group": "random",
+      "index": 11,
+      "sound_file": "voice/23.wav",
+      "translation": "嗯~"
+    },
+    {
+      "group": "random",
+      "index": 12,
+      "sound_file": "voice/24.wav",
+      "translation": "呀~"
+    },
+    {
+      "group": "random",
+      "index": 13,
+      "sound_file": "voice/25.wav",
+      "translation": "嗯~"
+    },
+    {
+      "group": "random",
+      "index": 14,
+      "sound_file": "voice/26.wav",
+      "translation": "啊~"
+    },
+    {
+      "group": "new_msg",
+      "index": 0,
+      "sound_file": "voice/33.wav",
+      "translation": "啊~"
+    }
+  ]
+}

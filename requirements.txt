@@ -1,0 +1,14 @@
+# 桌面宠物依赖
+PySide6>=6.6
+pygame>=2.0.0
+
+# TTS 文字朗读：使用 PySide6 自带的 QtTextToSpeech（Windows SAPI/WinRT），
+# 无需额外安装。以下 pyttsx3/pywin32 仅作为可选兜底后端，默认不需要：
+# pyttsx3>=2.90
+# pywin32>=304
+
+# 文件操作
+send2trash>=1.8.0
+
+# 可选：Live2D 支持（支持 Cubism 2 的 model.json/*.model.json 与 Cubism 3 的 *.model3.json）
+# live2d-py
