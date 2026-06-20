@@ -601,10 +601,17 @@ class SmartChatBubble(QWidget):
         self._follow_timer = QTimer(self)
         self._follow_timer.timeout.connect(self._follow_tick)
         self._follow_interval = 120   # ms，约 8 次/秒，足够跟手又不增加明显开销
+        # 锁定位置：True 时气泡弹出后固定在原处、不再跟随宠物上下左右浮动（仅猜拳等场景启用），
+        # 避免宠物待机/动作时气泡随头部高度反复重测而抽搐。
+        self._follow_locked = False
 
     def _follow_tick(self):
         """节流地重测模型内容包围盒并重新贴合，使气泡跟随实时头部高度。"""
         if not (self.isVisible() and self.parent()):
+            self._follow_timer.stop()
+            return
+        if self._follow_locked:
+            # 已锁定：保持弹出时的位置，不再跟随（猜拳等场景，防止抽搐）
             self._follow_timer.stop()
             return
         parent = self.parent()
@@ -668,12 +675,15 @@ class SmartChatBubble(QWidget):
         if parent is not None:
             _stack_window_behind(parent, self)
 
-    def show_message(self, text, duration=None):
+    def show_message(self, text, duration=None, lock_position=False):
         """显示消息，自动换行，跟随宠物，避开屏幕边缘。
 
         duration=None 时按文本长度自动估算时长；传入具体毫秒数（如语音字幕）则
-        严格采用该时长，让气泡停留与语音播放对齐。"""
+        严格采用该时长，让气泡停留与语音播放对齐。
+        lock_position=True 时气泡只在弹出瞬间定位一次，之后固定不动（猜拳等场景，
+        避免气泡随宠物待机/动作上下左右浮动而抽搐）。"""
         parent = self.parent()
+        self._follow_locked = bool(lock_position)
         if parent is not None:
             allow_show = getattr(parent, "_can_show_chat_bubble", None)
             if callable(allow_show):
@@ -715,8 +725,8 @@ class SmartChatBubble(QWidget):
         self.sync_window_layer()
         self._opacity = 1.0
         self.update()
-        # 启动实时跟随，气泡贴着头部随动作上下浮动
-        if parent:
+        # 启动实时跟随，气泡贴着头部随动作上下浮动；锁定时不跟随、保持原位
+        if parent and not self._follow_locked:
             self._follow_timer.start(self._follow_interval)
 
         # 显示时长：调用方给了具体毫秒数（如语音字幕，与语音长度对齐）就用它，
@@ -852,7 +862,9 @@ class SmartChatBubble(QWidget):
         self.move(px, py)
 
     def update_position(self):
-        """更新气泡位置，供父窗口移动时调用以实现实时跟随。"""
+        """更新气泡位置，供父窗口移动时调用以实现实时跟随。锁定时保持原位。"""
+        if self._follow_locked:
+            return
         if self.isVisible() and self.parent():
             self._smart_position(self.width(), self.height())
 
@@ -1206,7 +1218,7 @@ class IntelligentChatManager:
         self._click_quote_enabled = bool(enabled)
 
     def say(self, message=None, context=None, reschedule=True, allow_tts=True,
-            from_click=False, interaction=False):
+            from_click=False, interaction=False, lock_position=False):
         """立即说话。主动调用时会重置自动播放定时器，避免冲突。
 
         reschedule=False 用于内部定时器/问候触发：由调用方（_on_timer/start）统一排程，
@@ -1248,7 +1260,7 @@ class IntelligentChatManager:
         self._is_speaking = True
         disp = max(3000, min(10000, 2500 + len(text) * 150))
         QTimer.singleShot(disp + 500, self._clear_speaking_flag)
-        if self.bubble.show_message(text) is False:
+        if self.bubble.show_message(text, lock_position=lock_position) is False:
             self._is_speaking = False
             return
         self._last_play_time = datetime.now()

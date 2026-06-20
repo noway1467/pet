@@ -166,7 +166,7 @@ def builtin_favorites():
 
 
 APP_NAME = "桌面宠物"
-APP_VERSION = "3.9.2"
+APP_VERSION = "3.9.3"
 ACCENT = "#5BB8F5"
 
 # ──── 贴边自动隐藏参数 ────
@@ -293,18 +293,28 @@ class PetWindow(QWidget):
         self._look_timer.start(50)
         # 重力掉落
         self._fall_timer = QTimer(self)
+        self._fall_timer.setTimerType(Qt.PreciseTimer)
         self._fall_timer.timeout.connect(self._fall_tick)
         # 窗口动作（起跳/点头/跳舞…）：移动整窗实现，Live2D/像素也能用
         self._act_timer = QTimer(self)
+        self._act_timer.setTimerType(Qt.PreciseTimer)
         self._act_timer.timeout.connect(self._act_tick)
         self._act_name = None
         self._act_home = None
         self._act_t = 0.0
         self._act_dur = 0.7
+        # 拖动节流：高频鼠标(125~1000Hz)每个 move 事件都 move() 半透明分层窗口会让 DWM
+        # 反复重合成、拖不跟手。把实际 move() 合并到 ~125Hz，并在松手时落实最终位置。
+        self._drag_target = None
+        self._drag_applied = None
+        self._drag_move_timer = QTimer(self)
+        self._drag_move_timer.setTimerType(Qt.PreciseTimer)
+        self._drag_move_timer.timeout.connect(self._drag_move_flush)
         # 摸头手势覆盖动画：只动画"手"，不再让宠物本体左右晃动
         self._petting_overlay_t = -1.0
         self._petting_overlay_dur = 0.9
         self._petting_timer = QTimer(self)
+        self._petting_timer.setTimerType(Qt.PreciseTimer)
         self._petting_timer.timeout.connect(self._petting_tick)
         self._petting_overlay = PettingOverlay(self, self)
         self._petting_overlay.sync_geometry()
@@ -538,7 +548,13 @@ class PetWindow(QWidget):
                         self.renderer.set_facing(-1)
                 self._last_drag_x = gp.x()
                 tgt = gp - self._drag_off
-                self.move(tgt.x(), self._clamp_y(tgt.y()))
+                # 合并高频 move 事件：记录目标位置，首个事件立即落位、随后按 ~125Hz 节流，
+                # 避免每个鼠标事件都触发分层窗口重合成导致拖动卡顿。
+                self._drag_target = (tgt.x(), self._clamp_y(tgt.y()))
+                if not self._drag_move_timer.isActive():
+                    self._drag_applied = self._drag_target
+                    self.move(*self._drag_target)
+                    self._drag_move_timer.start(8)
                 return True
             if t == QEvent.MouseButtonRelease and ev.button() == Qt.LeftButton:
                 if self._drag_off is None and self._drag_candidate_off is None:
@@ -547,6 +563,12 @@ class PetWindow(QWidget):
                 self._drag_off = None
                 self._drag_candidate_off = None
                 if was_dragging:
+                    # 落实拖动的最终位置，再停止节流定时器
+                    self._drag_move_timer.stop()
+                    if self._drag_target is not None and self._drag_target != self._drag_applied:
+                        self.move(*self._drag_target)
+                    self._drag_target = None
+                    self._drag_applied = None
                     self._set_renderer_mask_updates(True)
                     self._set_renderer_render_active(True)
                 moved = self._moved
@@ -636,6 +658,8 @@ class PetWindow(QWidget):
         self._drag_off = self._drag_candidate_off
         self._drag_candidate_off = None
         self._moved = True
+        self._drag_target = None
+        self._drag_applied = None
         self._clear_head_cursor()
         self._set_renderer_mask_updates(False)
         self._set_renderer_render_active(False)
@@ -644,7 +668,20 @@ class PetWindow(QWidget):
         if hasattr(self.renderer, "react"):
             self.renderer.react("grab")
         tgt = gp - self._drag_off
-        self.move(tgt.x(), self._clamp_y(tgt.y()))
+        self._drag_target = (tgt.x(), self._clamp_y(tgt.y()))
+        self._drag_applied = self._drag_target
+        self.move(*self._drag_target)
+
+    def _drag_move_flush(self):
+        """拖动节流定时器：把最近一次鼠标目标落实到窗口；没有新位移就转入空闲（停表）。"""
+        if self._drag_off is None:
+            self._drag_move_timer.stop()
+            return
+        if self._drag_target is None or self._drag_target == self._drag_applied:
+            self._drag_move_timer.stop()   # 本帧无新位移：停表，下个 move 事件再唤醒
+            return
+        self._drag_applied = self._drag_target
+        self.move(*self._drag_target)
 
     def _in_head_region(self, click_x, click_y):
         """窗口内坐标 (click_x, click_y) 是否落在"头部摸头范围"：
@@ -665,97 +702,78 @@ class PetWindow(QWidget):
     def _pet_cursor(self):
         """构造并缓存"摸头小手"光标。
 
-        二次元风格白手套：清晰的手掌+五指，俯视视角，
-        修复大拇指缺口，手指与手掌无缝连接。"""
+        二次元白手套：与摸头覆盖动画同款手型，整只手由**一条** simplified 后的连续
+        路径构成（手掌+四指+拇指+袖口），拇指用平滑贝塞尔闭合，彻底消除旧版"拇指右侧
+        缺口"，并与点击后弹出的抚摸手势视觉一致。"""
         if getattr(self, "_pet_cursor_cache", None) is not None:
             return self._pet_cursor_cache
         cur = QCursor(Qt.PointingHandCursor)
         try:
-            from PySide6.QtCore import QRectF, QPointF
-            from PySide6.QtGui import QPainterPath
             size = 40
             pm = QPixmap(size, size)
             pm.fill(Qt.transparent)
             p = QPainter(pm)
             p.setRenderHint(QPainter.Antialiasing, True)
+            # 把原点挪到手掌中心附近，随后整只手都在以原点为中心的坐标里绘制
+            p.translate(21, 12)
+            u = 1.0
 
-            hand_color = QColor("#FFFFFF")
-            edge_color = QColor("#000000")
-            edge = QPen(edge_color)
-            edge.setWidthF(2.4)
+            # —— 单一连续路径：手掌 + 四指 + 拇指 + 袖口 ——
+            hand = QPainterPath()
+            hand.addRoundedRect(QRectF(-11 * u, 0 * u, 20 * u, 15 * u), 8 * u, 8 * u)       # 手掌
+            hand.addRoundedRect(QRectF(-10.7 * u, -7.5 * u, 4.6 * u, 10.5 * u), 2.4 * u, 2.4 * u)  # 食指
+            hand.addRoundedRect(QRectF(-6.0 * u, -10.0 * u, 4.8 * u, 12.6 * u), 2.4 * u, 2.4 * u)  # 中指（最长）
+            hand.addRoundedRect(QRectF(-1.0 * u, -9.2 * u, 4.8 * u, 11.6 * u), 2.4 * u, 2.4 * u)   # 无名指
+            hand.addRoundedRect(QRectF(4.0 * u, -6.8 * u, 4.6 * u, 9.4 * u), 2.4 * u, 2.4 * u)     # 小指
+            # 拇指：从手掌内部起笔，平滑曲线绕一圈再闭合，与手掌充分重叠，simplified 后无缝
+            thumb = QPainterPath()
+            thumb.moveTo(-8.8 * u, 3.4 * u)
+            thumb.quadTo(-14.8 * u, 2.6 * u, -16.4 * u, 7.6 * u)
+            thumb.quadTo(-17.6 * u, 11.4 * u, -14.0 * u, 13.6 * u)
+            thumb.quadTo(-10.4 * u, 15.0 * u, -7.4 * u, 11.0 * u)
+            thumb.quadTo(-6.3 * u, 8.6 * u, -6.0 * u, 4.6 * u)
+            thumb.closeSubpath()
+            hand.addPath(thumb)
+            hand.addRoundedRect(QRectF(-5.5 * u, 13.4 * u, 9.4 * u, 7.0 * u), 2.1 * u, 2.1 * u)    # 袖口
+            hand = hand.simplified()
+
+            # 阴影
+            p.fillPath(QPainterPath(hand).translated(1.1, 1.4), QColor(0, 0, 0, 60))
+            # 描边 + 白手套填充
+            edge = QPen(QColor("#2b2b2b"))
+            edge.setWidthF(2.0)
             edge.setJoinStyle(Qt.RoundJoin)
             edge.setCapStyle(Qt.RoundCap)
             p.setPen(edge)
-            p.setBrush(hand_color)
-
-            # 用一个整体路径绘制，避免缝隙
-            hand = QPainterPath()
-            
-            # 手掌主体：圆角矩形
-            hand.addRoundedRect(QRectF(10, 13, 20, 16), 7, 7)
-            
-            # 四根手指（食指、中指、无名指、小指）
-            # 指根深入手掌，无缝连接
-            hand.addRoundedRect(QRectF(11, 5, 5, 13), 2.5, 2.5)   # 食指
-            hand.addRoundedRect(QRectF(16, 3, 5, 15), 2.5, 2.5)   # 中指（最长）
-            hand.addRoundedRect(QRectF(21, 4, 5, 14), 2.5, 2.5)   # 无名指
-            hand.addRoundedRect(QRectF(26, 6, 4, 12), 2, 2)       # 小指（最短）
-            
-            # 拇指：用椭圆+矩形组合，完全填充缝隙
-            # 拇指主体（斜向左下）
-            thumb = QPainterPath()
-            thumb.addRoundedRect(QRectF(3, 16, 9, 8), 4, 4)
-            # 拇指与手掌的连接区域（填充缝隙）
-            thumb.addEllipse(QRectF(9, 14, 7, 9))
-            hand.addPath(thumb)
-            
-            # 袖口
-            hand.addRoundedRect(QRectF(13, 27, 13, 6), 2.5, 2.5)
-            
-            # 简化路径
-            hand = hand.simplified()
-
-            # 先画阴影
-            shadow = QPainterPath(hand)
-            p.fillPath(shadow.translated(1.2, 1.2), QColor(0, 0, 0, 50))
-            
-            # 画手套
+            p.setBrush(QColor("#FFFFFF"))
             p.drawPath(hand)
 
-            # 添加细节
+            # 细节：掌心高光 + 指尖高光 + 指缝/袖口分隔线
             p.setPen(Qt.NoPen)
-
-            # 掌心大高光
             p.setBrush(QColor(255, 255, 255, 210))
-            p.drawEllipse(QRectF(14, 16, 10, 6))
-            
-            # 指尖高光
-            p.setBrush(QColor(255, 255, 255, 190))
-            highlights = [
-                (13, 8),    # 食指
-                (18, 6),    # 中指
-                (23, 7),    # 无名指
-                (27, 9),    # 小指
-                (6, 19),    # 拇指
-            ]
-            for hx, hy in highlights:
-                p.drawEllipse(QRectF(hx, hy, 2.5, 2))
-
-            # 指缝分隔线
-            guide = QPen(QColor(200, 200, 200, 150))
-            guide.setWidthF(1.0)
+            p.drawEllipse(QRectF(-6.0 * u, 3.4 * u, 8.4 * u, 5.1 * u))
+            p.setBrush(QColor(255, 255, 255, 188))
+            for hx, hy, hw, hh in (
+                (-9.7, -6.6, 2.0, 2.7),
+                (-4.8, -8.6, 2.0, 2.9),
+                (0.1, -7.8, 2.0, 2.8),
+                (4.9, -5.8, 1.9, 2.5),
+                (-14.2, 8.2, 2.2, 1.8),
+            ):
+                p.drawEllipse(QRectF(hx * u, hy * u, hw * u, hh * u))
+            guide = QPen(QColor(186, 182, 196, 165))
+            guide.setWidthF(0.9)
             guide.setCapStyle(Qt.RoundCap)
             p.setPen(guide)
-            p.drawLine(QPointF(16, 14), QPointF(16, 8))
-            p.drawLine(QPointF(21, 14), QPointF(21, 7))
-            p.drawLine(QPointF(26, 14), QPointF(26, 9))
-            # 袖口线
-            p.drawLine(QPointF(14, 30), QPointF(25, 30))
+            p.drawLine(QPointF(-6.0 * u, 1.1 * u), QPointF(-6.0 * u, -3.5 * u))
+            p.drawLine(QPointF(-1.0 * u, 0.5 * u), QPointF(-1.0 * u, -5.0 * u))
+            p.drawLine(QPointF(4.0 * u, 1.0 * u), QPointF(4.0 * u, -2.8 * u))
+            p.drawLine(QPointF(-5.0 * u, 15.9 * u), QPointF(3.1 * u, 15.9 * u))
 
             p.end()
 
-            # 热点在掌心
-            cur = QCursor(pm, 20, 18)
+            # 热点在指尖与掌心之间（手"按"在头上的接触点）
+            cur = QCursor(pm, 20, 15)
         except Exception:
             pass
         self._pet_cursor_cache = cur
@@ -2340,8 +2358,10 @@ class PetWindow(QWidget):
         dx, dy = self._action_offset(self._act_name, self._act_t)
         new_y = self._clamp_y(hy + int(round(dy)))
         self.move(hx + int(round(dx)), new_y)
-        # 动画过程中使用轻量级的位置同步，只让气泡跟随宠物偏移，避免每帧重新计算
-        if hasattr(self, "_chat_bubble") and self._chat_bubble.isVisible():
+        # 动画过程中使用轻量级的位置同步，只让气泡跟随宠物偏移，避免每帧重新计算。
+        # 气泡若已锁定（猜拳），保持原位不随动作偏移，避免抽搐。
+        if (hasattr(self, "_chat_bubble") and self._chat_bubble.isVisible()
+                and not getattr(self._chat_bubble, "_follow_locked", False)):
             # 直接计算气泡应该移动的偏移量，不重新计算智能定位
             bubble_dx = int(round(dx))
             bubble_dy = new_y - hy  # 使用实际移动的y偏移（考虑了clamp）
@@ -3155,7 +3175,9 @@ class PetWindow(QWidget):
                         gain_tip = "　好感 +%d ❤" % r["gained"]
                     else:
                         gain_tip = ""
-                    self._chat_manager.say(line + gain_tip)
+                    # 猜拳气泡锁定位置：弹出后固定不动，避免每局 tilt/nod/hop 动作 +
+                    # 待机重测让气泡上下左右抽搐（仅猜拳场景锁定）。
+                    self._chat_manager.say(line + gain_tip, lock_position=True)
             except Exception:
                 play_panel = None
                 play_action = None

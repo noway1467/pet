@@ -263,6 +263,9 @@ class _Live2DGL(QOpenGLWidget):
         self.model = None
         self._last_t = None
         self._look = (0.0, 0.0)        # 归一化视线方向 -1..1
+        self._look_smooth = (0.0, 0.0)  # 缓动后的视线，避免头部生硬瞬移
+        self._follow_active = not self._preview_mode  # 是否启用"看向鼠标"
+        self._look_params = None       # 懒加载：v3 模型存在的标准朝向参数 {role: param_id}
         self._idle_group = None        # 用于循环播放的待机动作组
         self._auto_motion = not self._preview_mode
         self._disabled_motions = set()  # 禁止"自动循环"播放的动作键集合 {"组名/索引"}（手动触发不受限）
@@ -308,6 +311,9 @@ class _Live2DGL(QOpenGLWidget):
         self.setUpdateBehavior(QOpenGLWidget.NoPartialUpdate)
         self.fps = 12 if self._preview_mode else 30
         self.timer = QTimer(self)
+        # 精确定时器：Windows 默认的粗粒度定时器会把 33ms 间隔吸附到 ~15.6ms 边界，
+        # 造成 31/47ms 交替的帧抖动（肉眼“掉帧”）；用 PreciseTimer 让帧间隔稳定。
+        self.timer.setTimerType(Qt.PreciseTimer)
         self.timer.timeout.connect(self.update)
         self.timer.start(int(1000 / self.fps))
         self._mask_timer = QTimer(self)
@@ -328,6 +334,8 @@ class _Live2DGL(QOpenGLWidget):
         self._content_box = None
         self._idle_group = None
         self._last_t = None
+        self._look_params = None       # 朝向参数随模型而变，换模型后需重新探测
+        self._look_smooth = (0.0, 0.0)
         self._motion_cooldown = 0.0
         self._last_motion_t = 0.0
         self._next_expr_t = 0.0
@@ -463,10 +471,72 @@ class _Live2DGL(QOpenGLWidget):
         return self._auto_ratio
 
     def set_follow(self, on):
+        self._follow_active = bool(on)
         if not on:
             self._look = (0.0, 0.0)
         if self._preview_mode:
             self._auto_motion = False
+
+    def _ensure_look_params(self):
+        """探测并缓存本模型存在的标准"朝向"参数（仅 v3：v2 没有 GetParamIds，
+        且其 AddParameterValue 对不存在的参数会越界写坏内存，故 v2 仍走库的 Drag）。
+        返回 {role: param_id}，role ∈ angle_x/angle_y/angle_z/body_x/eye_x/eye_y。"""
+        if self._look_params is not None:
+            return self._look_params
+        mp = {}
+        self._look_params = mp
+        if not self.model or self.version != "v3":
+            return mp
+        try:
+            ids = set(str(x) for x in self.model.GetParamIds())
+        except Exception:
+            ids = set()
+        if not ids:
+            return mp
+        cand = {
+            "angle_x": "ParamAngleX",
+            "angle_y": "ParamAngleY",
+            "angle_z": "ParamAngleZ",
+            "body_x":  "ParamBodyAngleX",
+            "eye_x":   "ParamEyeBallX",
+            "eye_y":   "ParamEyeBallY",
+        }
+        for role, pid in cand.items():
+            if pid in ids:
+                mp[role] = pid
+        return mp
+
+    def _apply_look_v3(self):
+        """v3：在 Update 之后显式把头/眼/身体的标准参数写向（缓动后的）鼠标方向。
+
+        部分 v3 模型的内置 Drag 映射不生效（看向鼠标"失效"），这里用 SetParameterValue
+        直接驱动标准参数，确定性地让它看向鼠标；同时这些参数也是物理摆动的输入，
+        头发等照样跟随。仅写模型真实存在的参数，不碰眨眼/呼吸，模型依旧自然。"""
+        mp = self._ensure_look_params()
+        if not mp:
+            return
+        tx, ty = self._look
+        sx, sy = self._look_smooth
+        sx += (tx - sx) * 0.4
+        sy += (ty - sy) * 0.4
+        self._look_smooth = (sx, sy)
+        vals = {
+            "angle_x": sx * 30.0,
+            "angle_y": sy * 30.0,
+            "angle_z": sx * sy * -30.0,
+            "body_x":  sx * 10.0,
+            "eye_x":   sx,
+            "eye_y":   sy,
+        }
+        for role, pid in mp.items():
+            v = vals.get(role)
+            if v is None:
+                continue
+            try:
+                # 用 Set（绝对值）而非 Add：v3 的 AddParameterValue 会 AddAndSave 逐帧累积
+                self.model.SetParameterValue(pid, v)
+            except Exception:
+                pass
 
     def set_mask_updates_enabled(self, enabled):
         """暂停/恢复 alpha 遮罩刷新；拖动窗口时暂停可避免 grabFramebuffer 抢占。"""
@@ -830,20 +900,54 @@ class _Live2DGL(QOpenGLWidget):
 
         top/bottom 预留：相对完整内容高度的可见区间，默认整只。靠"抓帧测量→修正"
         迭代收敛，对不同宽高的模型自适应。返回 True 表示测到内容并完成贴合。
+
+        健壮性：刚加载/刚改尺寸时离屏 framebuffer 可能还是上一个模型的残帧、半渲染帧
+        或未初始化缓冲（表现为花屏/头部被裁/底部翻转感）。这里先预热渲染、再对每次测量
+        做有效性校验，遇到可疑帧就跳过而不写入；若全程没有一次有效测量，则回滚到调用前
+        的构图，绝不把坏构图保存下去（用户原来要"点复位"才能恢复，正是因为坏构图被写入）。
         """
         if not self.model:
             return False
         if iters is None:
             iters = 3 if self._preview_mode else 6
+        # 调用前构图快照：测量失败时回滚
+        snap = (self._zoom, self._xoff, self._yoff, self._ratio,
+                self._auto_ratio, self._w, self._h)
+
+        def _restore_snapshot():
+            (self._zoom, self._xoff, self._yoff, self._ratio,
+             self._auto_ratio, self._w, self._h) = snap
+            self._update_canvas_size()
+            self.setFixedSize(self._canvas_w, self._canvas_h)
+            if self.model:
+                self.model.Resize(self._canvas_w, self._canvas_h)
+                self._apply_view()
+            self._content_box = None
+
+        # 预热：强制渲染两帧，冲掉上一个模型/未初始化缓冲的残留，避免对花屏帧测量
+        for _ in range(2):
+            try:
+                self.grabFramebuffer()
+            except Exception:
+                break
         ok = False
         for _ in range(int(iters)):
             b = self._measure_content()
             if b is None:
                 break
+            # 透明背景失效（整画布被判成不透明黑底）时这一帧不可信，别拿去贴合
+            if getattr(self, "_last_opaque_black_bg", False):
+                break
             nx0, ny0, nx1, ny1 = b
             cw = nx1 - nx0
             full_h = ny1 - ny0
-            if cw < 0.01 or full_h < 0.01:
+            # 退化/可疑包围盒校验：
+            #   太小 → 没测到内容（空帧/半渲染）；
+            #   宽高都几乎占满画布 → 透明失效/黑底误判（花屏帧）。
+            # 这类帧若拿去贴合会把模型缩放/偏移甩飞（头被裁、底部翻转感）。
+            if cw < 0.02 or full_h < 0.02:
+                break
+            if cw > 0.985 and full_h > 0.985:
                 break
             ok = True
             by0 = ny0 + max(0.0, top) * full_h          # 目标可见区间（屏幕归一化，0=上）
@@ -862,10 +966,18 @@ class _Live2DGL(QOpenGLWidget):
             self._auto_ratio = False
             self._apply_view()
             self._resize_to_ratio(notify=False)
+            # 改完尺寸后预热一帧，让 FBO 跟上新画布再进入下一轮测量，避免测到过渡帧
+            try:
+                self.grabFramebuffer()
+            except Exception:
+                pass
             if abs(cx - 0.5) < 0.02 and abs(cy - 0.5) < 0.02 and (target - 0.08) < max(cw, ch) <= (target + 0.06):
                 break
         if ok:
             self._resize_to_ratio(notify=True)
+        else:
+            # 没有任何一次有效测量：回滚，绝不写入坏构图
+            _restore_snapshot()
         return ok
 
     # --- 动作清单 / 手动播放（供菜单调用）---
@@ -1533,18 +1645,21 @@ class _Live2DGL(QOpenGLWidget):
             now = time.perf_counter()
             dt = 0.0 if self._last_t is None else max(0.0, now - self._last_t)
             self._last_t = now
-            # 看向鼠标：把归一化方向转成窗口像素坐标喂给 Drag
-            try:
-                px = (self._look[0] * 0.5 + 0.5) * self._canvas_w
-                py = (0.5 - self._look[1] * 0.5) * self._canvas_h
-                self.model.Drag(px, py)
-            except Exception:
-                pass
-            if self.version == "v3":
-                self.model.Update()
-            else:
-                self.model.Update()
+            # 看向鼠标（仅启用跟随时）：
+            #   v2 — 库的 Drag 在 Update 内部把 dragX/Y 加到标准参数，必须在 Update 前喂入；
+            #   v3 — 改在 Update 后用 _apply_look_v3 显式写参数（更可靠），这里不喂 Drag 以免叠加。
+            if self._follow_active and self.version != "v3":
+                try:
+                    px = (self._look[0] * 0.5 + 0.5) * self._canvas_w
+                    py = (0.5 - self._look[1] * 0.5) * self._canvas_h
+                    self.model.Drag(px, py)
+                except Exception:
+                    pass
+            self.model.Update()
             self._apply_manual_expression_overrides()
+            # v3：Update 之后显式把头/眼朝向写向鼠标，确定性修复"部分模型看向鼠标失效"。
+            if self._follow_active and self.version == "v3":
+                self._apply_look_v3()
             # 待机循环：上一个动作放完就再来一个，模型持续有动作
             # 放完后留一段（带随机）空档再换，切太快会卡顿/闪烁
             if self._auto_motion:
@@ -1626,6 +1741,8 @@ class Live2DPet(QWidget):
         self.setMouseTracking(True)
         self.fps = getattr(self._gl, "fps", 30)
         self._render_timer = QTimer(self)
+        # 帧间隔稳定（同离屏 timer）：避免 Windows 粗粒度定时器导致的渲染抖动/掉帧观感。
+        self._render_timer.setTimerType(Qt.PreciseTimer)
         self._render_timer.timeout.connect(self._render_tick)
         self._render_timer.start(int(1000 / max(1, self.fps)))
 
