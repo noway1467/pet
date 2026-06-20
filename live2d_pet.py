@@ -86,6 +86,8 @@ MASK_REFRESH_MS = 180
 MASK_PREVIEW_REFRESH_MS = 260
 CANVAS_MARGIN_MIN, CANVAS_MARGIN_MAX = 32, 96
 CANVAS_MARGIN_RATIO = 0.22
+CANVAS_ZOOM_MARGIN_RATIO = 0.30
+CANVAS_PREVIEW_MARGIN_SCALE = 0.85
 
 # 可识别为 Live2D 模型设置的 JSON 文件后缀（小写）
 MODEL_SUFFIXES = (".model3.json", ".model.json")
@@ -425,15 +427,30 @@ class _Live2DGL(QOpenGLWidget):
 
     # --- 对外接口（与 PixelPet / ImagePet 保持一致，供 main.py 调用）---
     def _update_canvas_size(self):
+        # 画布四周除了基础留白，还要给“放大构图 + 偏移 + 动作摆幅”留出额外空间。
+        # 否则模型一旦被推到离屏 FBO 边界之外，部分运行时会把越界区域错误采样成
+        # 重复/镜像块，看起来像壁纸 repeat。预览模式稍微保守一点即可，桌面实模则宁可
+        # 画布大一点，也不要把真实模型切到边界上。
+        zoom_extra = max(0.0, float(self._zoom) - 1.0)
+        margin_ratio = (
+            CANVAS_MARGIN_RATIO
+            + zoom_extra * CANVAS_ZOOM_MARGIN_RATIO
+        )
+        if self._preview_mode:
+            margin_ratio *= CANVAS_PREVIEW_MARGIN_SCALE
+        dynamic_cap = CANVAS_MARGIN_MAX + int(round(self._w * 0.55))
         self._canvas_margin = max(
             MASK_PADDING_MIN,
-            min(CANVAS_MARGIN_MAX,
-                max(CANVAS_MARGIN_MIN, int(round(self._w * CANVAS_MARGIN_RATIO)))))
+            min(dynamic_cap,
+                max(CANVAS_MARGIN_MIN, int(round(self._w * margin_ratio)))))
         self._canvas_w = int(self._w + self._canvas_margin * 2)
         self._canvas_h = int(self._h + self._canvas_margin * 2)
 
     def natural_size(self):
         return QSize(self._canvas_w, self._canvas_h)
+
+    def live2d_size(self):
+        return int(self._w)
 
     def set_scale(self, *_):
         pass
@@ -689,10 +706,25 @@ class _Live2DGL(QOpenGLWidget):
                 pass
 
     def set_view(self, zoom, xoff, yoff):
-        self._zoom = max(0.2, min(5.0, float(zoom)))
-        self._xoff = max(-2.0, min(2.0, float(xoff)))
-        self._yoff = max(-2.0, min(2.0, float(yoff)))
+        new_zoom = max(0.2, min(5.0, float(zoom)))
+        new_xoff = max(-2.0, min(2.0, float(xoff)))
+        new_yoff = max(-2.0, min(2.0, float(yoff)))
+        size_changed = (
+            abs(new_zoom - self._zoom) > 1e-6
+            or abs(new_xoff - self._xoff) > 1e-6
+            or abs(new_yoff - self._yoff) > 1e-6
+        )
+        self._zoom = new_zoom
+        self._xoff = new_xoff
+        self._yoff = new_yoff
         self._content_box = None
+        if size_changed:
+            old_size = (self._canvas_w, self._canvas_h)
+            self._update_canvas_size()
+            if (self._canvas_w, self._canvas_h) != old_size:
+                self.setFixedSize(self._canvas_w, self._canvas_h)
+                if self.model:
+                    self.model.Resize(self._canvas_w, self._canvas_h)
         self._apply_view()
 
     def get_view(self):
@@ -1717,6 +1749,7 @@ class Live2DPet(QWidget):
         self.setAutoFillBackground(False)
         self._preview_mode = bool(preview_mode)
         self._frame = None
+        self._pending_resize_guard = 0
         # main.py 会给这些回调赋值（赋到本控件上，再桥接到离屏渲染器）
         self.on_error = None
         self.on_resized = None
@@ -1757,6 +1790,16 @@ class Live2DPet(QWidget):
             return
         if img is None or img.isNull():
             return
+        # 刚改完画布尺寸时，QOpenGLWidget 可能短暂读回上一帧的 FBO 大小。
+        # 这类过渡帧在 HiDPI 下会表现成双影、镜像脚或边缘花屏；直接丢弃，
+        # 等 Qt 把新的 framebuffer 真正重建好后再显示。
+        expected_w, expected_h = self._expected_framebuffer_size()
+        if (abs(img.width() - expected_w) > 2 or abs(img.height() - expected_h) > 2):
+            self._pending_resize_guard = max(self._pending_resize_guard, 2)
+            return
+        if self._pending_resize_guard > 0:
+            self._pending_resize_guard -= 1
+            return
         gl._last_grab_img = img          # 供 refresh_content_box 复用，避免气泡跟随时额外抓帧
         w = max(1, self.width())
         dpr = img.width() / float(w)
@@ -1772,6 +1815,10 @@ class Live2DPet(QWidget):
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
         p.drawImage(0, 0, self._frame)
         p.end()
+
+    def clear_frame(self):
+        self._frame = None
+        self.update()
 
     # ---------- 回调桥接 ----------
     def _on_gl_error(self, *a):
@@ -1790,8 +1837,15 @@ class Live2DPet(QWidget):
     def _sync_size_from_gl(self):
         sz = self._gl.natural_size()
         if self.size() != sz:
+            self._frame = None
+            self._pending_resize_guard = 2
             self.setFixedSize(sz)
         self.update()
+
+    def _expected_framebuffer_size(self):
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        return (max(1, int(round(self.width() * dpr))),
+                max(1, int(round(self.height() * dpr))))
 
     def refresh_content_box(self):
         """重测内容包围盒，但**复用最近一帧已抓取的 framebuffer**，不再独立触发离屏渲染。
@@ -1817,20 +1871,37 @@ class Live2DPet(QWidget):
     def natural_size(self):
         return self._gl.natural_size()
 
+    def live2d_size(self):
+        return self._gl.live2d_size()
+
     def set_live2d_size(self, s):
+        self._frame = None
+        self._pending_resize_guard = 2
         self._gl.set_live2d_size(s)
         self._sync_size_from_gl()
 
     def set_height_ratio(self, r):
+        self._frame = None
+        self._pending_resize_guard = 2
         self._gl.set_height_ratio(r)
         self._sync_size_from_gl()
 
     def fit_to_content(self, *a, **k):
+        self._frame = None
+        self._pending_resize_guard = 2
         ok = self._gl.fit_to_content(*a, **k)
         self._sync_size_from_gl()
         return ok
 
+    def set_view(self, zoom, xoff, yoff):
+        self._frame = None
+        self._pending_resize_guard = 2
+        self._gl.set_view(zoom, xoff, yoff)
+        self._sync_size_from_gl()
+
     def reload_model(self, *a, **k):
+        self._frame = None
+        self._pending_resize_guard = 2
         self._gl.reload_model(*a, **k)
         self._sync_size_from_gl()
         self.update()
@@ -1857,6 +1928,7 @@ class Live2DPet(QWidget):
             self._render_timer.stop()
         except Exception:
             pass
+        self._frame = None
         gl = self._gl
         self._gl = None
         try:

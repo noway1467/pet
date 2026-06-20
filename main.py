@@ -224,7 +224,8 @@ class PettingOverlay(QWidget):
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_NoSystemBackground, True)
-        self.hide()
+        self.show()
+        self.setVisible(False)
 
     def sync_geometry(self):
         parent = self.parentWidget()
@@ -240,6 +241,26 @@ class PettingOverlay(QWidget):
         self._owner._draw_petting_hand(
             p, self._owner._petting_overlay_rect(), self._owner._petting_overlay_t)
         p.end()
+
+
+def _build_glove_path(unit=1.0):
+    """返回一只更圆润的二次元白手套路径：不自相交、不留洞，适合粗描边卡通风。"""
+    u = float(unit)
+    hand = QPainterPath()
+    hand.setFillRule(Qt.WindingFill)
+    # 掌心略倾斜、偏椭圆，让姿势从“平放”变成轻微弯曲按压感。
+    hand.addRoundedRect(QRectF(-11.0 * u, 0.8 * u, 21.5 * u, 15.4 * u), 8.7 * u, 8.7 * u)
+    for x, y, w, h, rx in (
+        (-11.0, -6.8, 4.7, 10.4, 2.5),
+        (-6.0, -10.6, 5.2, 14.8, 2.8),
+        (-0.6, -10.0, 5.0, 13.7, 2.7),
+        (4.5, -7.5, 4.4, 10.7, 2.4),
+    ):
+        hand.addRoundedRect(QRectF(x * u, y * u, w * u, h * u), rx * u, rx * u)
+    # 拇指做成更大、更外翻的椭圆，卡通味更强，也更像按下去的猫爪手套。
+    hand.addEllipse(QRectF(-17.6 * u, 4.4 * u, 11.4 * u, 11.8 * u))
+    hand.addRoundedRect(QRectF(-6.2 * u, 14.8 * u, 11.8 * u, 7.8 * u), 2.8 * u, 2.8 * u)
+    return hand.simplified()
 
 
 class PetWindow(QWidget):
@@ -318,6 +339,8 @@ class PetWindow(QWidget):
         self._petting_timer.timeout.connect(self._petting_tick)
         self._petting_overlay = PettingOverlay(self, self)
         self._petting_overlay.sync_geometry()
+        self._pet_cursor_cache = None
+        self._warm_petting_assets()
         # 贴边隐藏：滑动动画 + 监视光标决定划出/缩回
         self._slide_timer = QTimer(self)
         self._slide_timer.timeout.connect(self._slide_tick)
@@ -402,10 +425,28 @@ class PetWindow(QWidget):
     def _build_renderer(self):
         old = self.renderer
         if old is not None:
+            try:
+                clear = getattr(old, "clear_frame", None)
+                if callable(clear):
+                    clear()
+            except Exception:
+                pass
+            try:
+                old.hide()
+            except Exception:
+                pass
             old.shutdown()
             old.removeEventFilter(self)
             old.setParent(None)
-            old.deleteLater()
+            try:
+                old.close()
+            except Exception:
+                pass
+            try:
+                old.deleteLater()
+                QApplication.sendPostedEvents(None, 0)
+            except Exception:
+                pass
             self.renderer = None
             gc.collect()
 
@@ -482,6 +523,21 @@ class PetWindow(QWidget):
         QTimer.singleShot(1800, self._refresh_live2d_alpha_mask)
         QTimer.singleShot(3200, self._refresh_live2d_alpha_mask)
         self._schedule_layer_sync()
+
+    def _warm_petting_assets(self):
+        """提前构建摸头资源，避免第一次点击时才创建导致一闪而过的首帧脏画面。"""
+        try:
+            self._pet_cursor()
+        except Exception:
+            pass
+        try:
+            clear = getattr(self.renderer, "clear_frame", None)
+            if callable(clear):
+                clear()
+            self._petting_overlay.setVisible(False)
+            self._petting_overlay.update()
+        except Exception:
+            pass
 
     def _refresh_live2d_alpha_mask(self):
         """强制重建 Live2D 控件自身 alpha mask，裁掉透明区黑色画框。"""
@@ -687,24 +743,28 @@ class PetWindow(QWidget):
         """窗口内坐标 (click_x, click_y) 是否落在"头部摸头范围"：
         模型顶部偏上的较小区域，尽量只覆盖头顶，不吃到额头以下。"""
         try:
-            _, top_inset, _, _ = self._content_inset()
+            l_in, top_inset, r_in, _ = self._content_inset()
         except Exception:
+            l_in = r_in = 0
             top_inset = 0
+        content_left = int(l_in)
         content_top = int(top_inset)
+        content_w = max(1, self.width() - int(l_in) - int(r_in))
         content_h = max(1, self.height() - content_top)
         head_h = max(28, int(content_h * 0.18))
         head_bottom = content_top + head_h
-        side_margin = int(self.width() * 0.34)
+        side_margin = int(content_w * 0.28)
+        head_left = content_left + side_margin
+        head_right = content_left + content_w - side_margin
         in_y = content_top <= click_y <= head_bottom
-        in_x = side_margin <= click_x <= (self.width() - side_margin)
+        in_x = head_left <= click_x <= head_right
         return in_y and in_x
 
     def _pet_cursor(self):
         """构造并缓存"摸头小手"光标。
 
-        二次元白手套：与摸头覆盖动画同款手型，整只手由**一条** simplified 后的连续
-        路径构成（手掌+四指+拇指+袖口），拇指用平滑贝塞尔闭合，彻底消除旧版"拇指右侧
-        缺口"，并与点击后弹出的抚摸手势视觉一致。"""
+        二次元白手套：与摸头覆盖动画同款手型，使用同一份路径数据，避免光标和覆盖层
+        长得不一样。"""
         if getattr(self, "_pet_cursor_cache", None) is not None:
             return self._pet_cursor_cache
         cur = QCursor(Qt.PointingHandCursor)
@@ -715,65 +775,47 @@ class PetWindow(QWidget):
             p = QPainter(pm)
             p.setRenderHint(QPainter.Antialiasing, True)
             # 把原点挪到手掌中心附近，随后整只手都在以原点为中心的坐标里绘制
-            p.translate(21, 12)
+            p.translate(21, 10)
             u = 1.0
-
-            # —— 单一连续路径：手掌 + 四指 + 拇指 + 袖口 ——
-            hand = QPainterPath()
-            hand.addRoundedRect(QRectF(-11 * u, 0 * u, 20 * u, 15 * u), 8 * u, 8 * u)       # 手掌
-            hand.addRoundedRect(QRectF(-10.7 * u, -7.5 * u, 4.6 * u, 10.5 * u), 2.4 * u, 2.4 * u)  # 食指
-            hand.addRoundedRect(QRectF(-6.0 * u, -10.0 * u, 4.8 * u, 12.6 * u), 2.4 * u, 2.4 * u)  # 中指（最长）
-            hand.addRoundedRect(QRectF(-1.0 * u, -9.2 * u, 4.8 * u, 11.6 * u), 2.4 * u, 2.4 * u)   # 无名指
-            hand.addRoundedRect(QRectF(4.0 * u, -6.8 * u, 4.6 * u, 9.4 * u), 2.4 * u, 2.4 * u)     # 小指
-            # 拇指：从手掌内部起笔，平滑曲线绕一圈再闭合，与手掌充分重叠，simplified 后无缝
-            thumb = QPainterPath()
-            thumb.moveTo(-8.8 * u, 3.4 * u)
-            thumb.quadTo(-14.8 * u, 2.6 * u, -16.4 * u, 7.6 * u)
-            thumb.quadTo(-17.6 * u, 11.4 * u, -14.0 * u, 13.6 * u)
-            thumb.quadTo(-10.4 * u, 15.0 * u, -7.4 * u, 11.0 * u)
-            thumb.quadTo(-6.3 * u, 8.6 * u, -6.0 * u, 4.6 * u)
-            thumb.closeSubpath()
-            hand.addPath(thumb)
-            hand.addRoundedRect(QRectF(-5.5 * u, 13.4 * u, 9.4 * u, 7.0 * u), 2.1 * u, 2.1 * u)    # 袖口
-            hand = hand.simplified()
+            hand = _build_glove_path(u)
 
             # 阴影
-            p.fillPath(QPainterPath(hand).translated(1.1, 1.4), QColor(0, 0, 0, 60))
+            p.fillPath(QPainterPath(hand).translated(1.0, 1.6), QColor(0, 0, 0, 56))
             # 描边 + 白手套填充
-            edge = QPen(QColor("#2b2b2b"))
-            edge.setWidthF(2.0)
+            edge = QPen(QColor("#202124"))
+            edge.setWidthF(1.9)
             edge.setJoinStyle(Qt.RoundJoin)
             edge.setCapStyle(Qt.RoundCap)
             p.setPen(edge)
             p.setBrush(QColor("#FFFFFF"))
             p.drawPath(hand)
 
-            # 细节：掌心高光 + 指尖高光 + 指缝/袖口分隔线
+            # 细节：掌心体积感 + 指尖高光 + 袖口分隔
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(255, 255, 255, 210))
-            p.drawEllipse(QRectF(-6.0 * u, 3.4 * u, 8.4 * u, 5.1 * u))
-            p.setBrush(QColor(255, 255, 255, 188))
+            p.setBrush(QColor(255, 255, 255, 214))
+            p.drawEllipse(QRectF(-5.2 * u, 4.8 * u, 8.2 * u, 5.2 * u))
+            p.setBrush(QColor(255, 255, 255, 190))
             for hx, hy, hw, hh in (
-                (-9.7, -6.6, 2.0, 2.7),
-                (-4.8, -8.6, 2.0, 2.9),
-                (0.1, -7.8, 2.0, 2.8),
-                (4.9, -5.8, 1.9, 2.5),
-                (-14.2, 8.2, 2.2, 1.8),
+                (-10.1, -6.2, 2.1, 2.8),
+                (-5.0, -8.8, 2.1, 3.0),
+                (0.1, -8.0, 2.1, 2.9),
+                (5.0, -5.5, 2.0, 2.5),
+                (-14.8, 9.2, 2.2, 1.9),
             ):
                 p.drawEllipse(QRectF(hx * u, hy * u, hw * u, hh * u))
-            guide = QPen(QColor(186, 182, 196, 165))
-            guide.setWidthF(0.9)
+            guide = QPen(QColor(176, 181, 194, 175))
+            guide.setWidthF(0.95)
             guide.setCapStyle(Qt.RoundCap)
             p.setPen(guide)
-            p.drawLine(QPointF(-6.0 * u, 1.1 * u), QPointF(-6.0 * u, -3.5 * u))
-            p.drawLine(QPointF(-1.0 * u, 0.5 * u), QPointF(-1.0 * u, -5.0 * u))
-            p.drawLine(QPointF(4.0 * u, 1.0 * u), QPointF(4.0 * u, -2.8 * u))
-            p.drawLine(QPointF(-5.0 * u, 15.9 * u), QPointF(3.1 * u, 15.9 * u))
+            p.drawLine(QPointF(-5.8 * u, 1.2 * u), QPointF(-5.8 * u, -3.8 * u))
+            p.drawLine(QPointF(-0.8 * u, 0.8 * u), QPointF(-0.8 * u, -5.2 * u))
+            p.drawLine(QPointF(4.2 * u, 1.2 * u), QPointF(4.2 * u, -2.7 * u))
+            p.drawLine(QPointF(-5.2 * u, 18.6 * u), QPointF(4.0 * u, 18.6 * u))
 
             p.end()
 
             # 热点在指尖与掌心之间（手"按"在头上的接触点）
-            cur = QCursor(pm, 20, 15)
+            cur = QCursor(pm, 20, 14)
         except Exception:
             pass
         self._pet_cursor_cache = cur
@@ -814,7 +856,7 @@ class PetWindow(QWidget):
         """启动摸头手势覆盖动画，只画手，不带动宠物窗口。"""
         self._petting_overlay_t = 0.0
         self._petting_overlay.sync_geometry()
-        self._petting_overlay.show()
+        self._petting_overlay.setVisible(True)
         self._petting_overlay.raise_()
         self.renderer.setCursor(QCursor(Qt.BlankCursor))
         self._head_cursor_on = False
@@ -827,7 +869,7 @@ class PetWindow(QWidget):
         if self._petting_overlay_t >= 1.0:
             self._petting_timer.stop()
             self._petting_overlay_t = -1.0
-            self._petting_overlay.hide()
+            self._petting_overlay.setVisible(False)
             try:
                 pos = self.renderer.mapFromGlobal(QCursor.pos())
                 self._update_head_cursor(pos.x(), pos.y())
@@ -838,12 +880,17 @@ class PetWindow(QWidget):
     def _petting_overlay_rect(self):
         """手势覆盖动画的手掌落点区域：比摸头热区略大一点，但仍只在头顶。"""
         try:
-            _, top_inset, _, _ = self._content_inset()
+            l_in, top_inset, r_in, _ = self._content_inset()
         except Exception:
+            l_in = r_in = 0
             top_inset = 0
-        w = max(54, int(self.width() * 0.28))
-        h = max(60, int(self.height() * 0.26))
-        x = int((self.width() - w) / 2)
+        content_left = int(l_in)
+        content_top = int(top_inset)
+        content_w = max(1, self.width() - int(l_in) - int(r_in))
+        content_h = max(1, self.height() - content_top)
+        w = max(54, int(content_w * 0.30))
+        h = max(60, int(content_h * 0.24))
+        x = int(content_left + (content_w - w) / 2)
         y = max(0, int(top_inset) - int(h * 0.22))
         return QRectF(x, y, w, h)
 
@@ -863,7 +910,7 @@ class PetWindow(QWidget):
         p.scale(squash_x, squash_y)
         p.rotate(math.sin(progress * 2 * math.pi * 0.8) * 4.5)
 
-        edge = QPen(QColor("#000000"))
+        edge = QPen(QColor("#202124"))
         edge.setWidthF(max(1.8, rect.width() * 0.024))
         edge.setJoinStyle(Qt.RoundJoin)
         edge.setCapStyle(Qt.RoundCap)
@@ -871,47 +918,32 @@ class PetWindow(QWidget):
         p.setBrush(QColor("#FFFFFF"))
 
         unit = rect.width() / 40.0
-        hand = QPainterPath()
-        hand.addRoundedRect(QRectF(-11 * unit, 0 * unit, 20 * unit, 15 * unit), 8 * unit, 8 * unit)
-        hand.addRoundedRect(QRectF(-10.7 * unit, -7.5 * unit, 4.6 * unit, 10.5 * unit), 2.4 * unit, 2.4 * unit)
-        hand.addRoundedRect(QRectF(-6.0 * unit, -10.0 * unit, 4.8 * unit, 12.6 * unit), 2.4 * unit, 2.4 * unit)
-        hand.addRoundedRect(QRectF(-1.0 * unit, -9.2 * unit, 4.8 * unit, 11.6 * unit), 2.4 * unit, 2.4 * unit)
-        hand.addRoundedRect(QRectF(4.0 * unit, -6.8 * unit, 4.6 * unit, 9.4 * unit), 2.4 * unit, 2.4 * unit)
-        thumb = QPainterPath()
-        thumb.moveTo(-8.8 * unit, 3.4 * unit)
-        thumb.quadTo(-14.8 * unit, 2.6 * unit, -16.4 * unit, 7.6 * unit)
-        thumb.quadTo(-17.6 * unit, 11.4 * unit, -14.0 * unit, 13.6 * unit)
-        thumb.quadTo(-10.4 * unit, 15.0 * unit, -7.4 * unit, 11.0 * unit)
-        thumb.quadTo(-6.3 * unit, 8.6 * unit, -6.0 * unit, 4.6 * unit)
-        thumb.closeSubpath()
-        hand.addPath(thumb)
-        hand.addRoundedRect(QRectF(-5.5 * unit, 13.4 * unit, 9.4 * unit, 7.0 * unit), 2.1 * unit, 2.1 * unit)
-        hand = hand.simplified()
+        hand = _build_glove_path(unit)
 
-        p.fillPath(QPainterPath(hand).translated(1.1 * unit, 1.5 * unit), QColor(0, 0, 0, 56))
+        p.fillPath(QPainterPath(hand).translated(1.0 * unit, 1.5 * unit), QColor(0, 0, 0, 54))
         p.drawPath(hand)
 
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, 210))
-        p.drawEllipse(QRectF(-6.0 * unit, 3.4 * unit, 8.4 * unit, 5.1 * unit))
-        p.setBrush(QColor(255, 255, 255, 188))
+        p.setBrush(QColor(255, 255, 255, 214))
+        p.drawEllipse(QRectF(-5.2 * unit, 4.8 * unit, 8.2 * unit, 5.2 * unit))
+        p.setBrush(QColor(255, 255, 255, 190))
         for hx, hy, hw, hh in (
-            (-9.7, -6.6, 2.0, 2.7),
-            (-4.8, -8.6, 2.0, 2.9),
-            (0.1, -7.8, 2.0, 2.8),
-            (4.9, -5.8, 1.9, 2.5),
-            (-14.2, 8.2, 2.2, 1.8),
+            (-10.1, -6.2, 2.1, 2.8),
+            (-5.0, -8.8, 2.1, 3.0),
+            (0.1, -8.0, 2.1, 2.9),
+            (5.0, -5.5, 2.0, 2.5),
+            (-14.8, 9.2, 2.2, 1.9),
         ):
             p.drawEllipse(QRectF(hx * unit, hy * unit, hw * unit, hh * unit))
 
-        guide = QPen(QColor(180, 180, 180, 170))
+        guide = QPen(QColor(176, 181, 194, 175))
         guide.setWidthF(max(0.8, rect.width() * 0.010))
         guide.setCapStyle(Qt.RoundCap)
         p.setPen(guide)
-        p.drawLine(QPointF(-6.0 * unit, 1.1 * unit), QPointF(-6.0 * unit, -3.5 * unit))
-        p.drawLine(QPointF(-1.0 * unit, 0.5 * unit), QPointF(-1.0 * unit, -5.0 * unit))
-        p.drawLine(QPointF(4.0 * unit, 1.0 * unit), QPointF(4.0 * unit, -2.8 * unit))
-        p.drawLine(QPointF(-5.0 * unit, 15.9 * unit), QPointF(3.1 * unit, 15.9 * unit))
+        p.drawLine(QPointF(-5.8 * unit, 1.2 * unit), QPointF(-5.8 * unit, -3.8 * unit))
+        p.drawLine(QPointF(-0.8 * unit, 0.8 * unit), QPointF(-0.8 * unit, -5.2 * unit))
+        p.drawLine(QPointF(4.2 * unit, 1.2 * unit), QPointF(4.2 * unit, -2.7 * unit))
+        p.drawLine(QPointF(-5.2 * unit, 18.6 * unit), QPointF(4.0 * unit, 18.6 * unit))
         p.restore()
 
     def _nurture_quiet_action(self, action):
@@ -1856,6 +1888,22 @@ class PetWindow(QWidget):
                 "size": (int(v["size"]) if v.get("size") else None),
                 "pos": ([int(pos[0]), int(pos[1])]
                         if isinstance(pos, (list, tuple)) and len(pos) == 2 else None)}
+
+    def _default_live2d_view(self, path, size_hint=None):
+        """新模型首次出现时的默认构图：各模型独立尺寸，构图归零，画布比例自动。"""
+        model_mem = self._get_model_memory(f"live2d:{_canon_path(path)}")
+        size = model_mem.get("size") or size_hint or DEFAULT_LIVE2D_SIZE
+        return {"zoom": 1.0, "xoff": 0.0, "yoff": 0.0, "ratio": None,
+                "size": int(size), "pos": None}
+
+    def _resolve_live2d_state(self, path, size_hint=None):
+        """合并模型记忆和构图配置，得到当前应使用的完整 Live2D 状态。"""
+        v = self._l2d_view_of(path)
+        base = self._default_live2d_view(path, size_hint=size_hint)
+        for key in ("zoom", "xoff", "yoff", "ratio", "size", "pos"):
+            if v.get(key) is not None:
+                base[key] = v[key]
+        return base
 
     def _l2d_save_view(self, path, zoom, xoff, yoff, ratio, size=None, pos=None):
         """按模型保存构图(zoom/xoff/yoff/ratio)；size/pos 仅在显式传入时更新、否则保留原值。"""
@@ -3539,6 +3587,8 @@ class PetWindow(QWidget):
     def _set_live2d_model(self, path):
         self.cfg["live2d_model"] = path
         self.cfg["character"] = "live2d"
+        state = self._resolve_live2d_state(path)
+        self.cfg["live2d_size"] = int(state["size"])
         config.save(self.cfg)
         self._switch_character_fast("live2d", path)
         self._refresh_tray()
@@ -3585,34 +3635,25 @@ class PetWindow(QWidget):
 
     def _switch_character_fast(self, character, model_path=None):
         """尽量原地切换形象，减少重建卡顿。"""
-        if character == "live2d" and model_path and hasattr(self.renderer, "reload_model"):
-            try:
-                v = self._l2d_view_of(model_path)
-                model_mem = self._get_model_memory(f"live2d:{_canon_path(model_path)}")
-                size = model_mem.get("size") or v["size"] or DEFAULT_LIVE2D_SIZE
-                self.cfg["live2d_size"] = int(size)
-                self.renderer.reload_model(model_path, size=size, zoom=v["zoom"], xoff=v["xoff"],
-                                           yoff=v["yoff"], ratio=v["ratio"])
-                self._apply_disabled_motions()
-                self._resize_keep_anchor(self.renderer.natural_size())
-                self._dock_bottom_right()
-                QTimer.singleShot(500, self._dock_bottom_right)
-                self._refresh_tray()
-                return
-            except Exception:
-                pass
+        if character == "live2d" and model_path:
+            state = self._resolve_live2d_state(model_path)
+            self.cfg["live2d_model"] = model_path
+            self.cfg["character"] = "live2d"
+            self.cfg["live2d_size"] = int(state["size"])
+            config.save(self.cfg)
         self._rebuild_and_restore_pos()
 
     def _set_live2d_size(self, s):
         self.cfg["live2d_size"] = s
-        if self.cfg["character"] == "live2d" and hasattr(self.renderer, "set_live2d_size"):
-            self.renderer.set_live2d_size(s)
-            self._resize_keep_anchor(self.renderer.natural_size())
+        if self.cfg["character"] == "live2d" and self.cfg.get("live2d_model"):
             v = self._l2d_view_of(self.cfg["live2d_model"])    # 按模型记住尺寸
             self._l2d_save_view(self.cfg["live2d_model"], v["zoom"], v["xoff"],
                                 v["yoff"], v["ratio"], size=s)  # 内部已 config.save
             # 同时保存到新的 model_memory 结构里
             self._save_model_memory(size=s)
+            # 尺寸变化改走完整重建路径，和“重启后正常”的冷启动保持一致，
+            # 彻底规避运行中热改尺寸残留旧 FBO/旧模型状态的问题。
+            self._rebuild_and_restore_pos()
         else:
             config.save(self.cfg)
 
@@ -4085,10 +4126,21 @@ class Live2DPicker(QDialog):
             "background:#eef4fa;border:1px solid #d9e2ec;border-radius:14px;")
         self.preview_lay = QVBoxLayout(self.preview_box)
         self.preview_lay.setContentsMargins(0, 0, 0, 0)
+        self.preview_lay.setAlignment(Qt.AlignCenter)
+        self.preview_view = QWidget(self.preview_box)
+        self.preview_view.setAttribute(Qt.WA_StyledBackground, True)
+        self.preview_view.setAutoFillBackground(True)
+        self.preview_view.setStyleSheet(
+            "background:#eef4fa;border:none;border-radius:12px;")
+        self.preview_view.setFixedSize(316, 448)
+        self.preview_view_lay = QVBoxLayout(self.preview_view)
+        self.preview_view_lay.setContentsMargins(0, 0, 0, 0)
+        self.preview_view_lay.setAlignment(Qt.AlignCenter)
         self.hint = QLabel("← 选个模型看看")
         self.hint.setAlignment(Qt.AlignCenter)
         self.hint.setStyleSheet("color:#9fb3c8;border:none;background:transparent;")
-        self.preview_lay.addWidget(self.hint)
+        self.preview_view_lay.addWidget(self.hint)
+        self.preview_lay.addWidget(self.preview_view, 0, Qt.AlignCenter)
         right.addWidget(self.preview_box, 0, Qt.AlignHCenter)
 
         # 显示尺寸：贴到桌面后宠物有多大（直接对应窗口边长，点"应用"生效）
@@ -4143,7 +4195,6 @@ class Live2DPicker(QDialog):
             ("↓", lambda: self._adj(1.0, 0.0, -0.08), "下移"),
             ("←", lambda: self._adj(1.0, -0.08, 0.0), "左移"),
             ("→", lambda: self._adj(1.0, 0.08, 0.0), "右移"),
-            ("自动贴合", lambda: self._fit_region(0.0, 1.0), "一键去空白、严格贴合模型"),
             ("框选范围", lambda: self._start_region_select(), "在预览上拖出矩形，自由选择模型显示区域和画框大小"),
             ("复位", lambda: self._reset(), "回到模型原始整体显示"),
             ("换动作", lambda: self._motion(), "随机播放一个动作"),
@@ -4153,7 +4204,7 @@ class Live2DPicker(QDialog):
             b.clicked.connect(fn)
             tools.addWidget(b)
         right.addLayout(tools)
-        tiph = QLabel("「显示尺寸」决定贴到桌面后多大；「模型缩放」调模型在画框里的占比；「画框 宽⟷高」改画框形状；↑↓←→挪位置；点「框选范围」后在预览上拖出矩形即可框住想显示的部位；「自动贴合」一键去空白。尺寸/构图都按每个模型各自记忆。")
+        tiph = QLabel("「显示尺寸」决定贴到桌面后多大；「模型缩放」调模型在画框里的占比；「画框 宽⟷高」改画框形状；↑↓←→挪位置；点「框选范围」后在预览上拖出矩形即可框住想显示的部位；「复位」回到默认整体显示。尺寸/构图都按每个模型各自记忆。")
         tiph.setWordWrap(True)
         tiph.setStyleSheet("color:#627d98;")
         right.addWidget(tiph)
@@ -4174,6 +4225,35 @@ class Live2DPicker(QDialog):
         self._rebuild("")
         # 延迟到对话框真正显示后再选中并(防抖)加载预览：点开菜单立刻弹窗，不再"卡一下才出来"
         QTimer.singleShot(0, lambda: self._select_current(current))
+
+    def _view_for_path(self, path):
+        """读取某模型的独立构图/尺寸；新模型返回干净默认值，不串用上一只模型。"""
+        v = dict(self._views.get(_canon_path(path)) or {})
+        r = v.get("ratio", None)
+        pos = v.get("pos")
+        return {
+            "zoom": float(v.get("zoom", 1.0)),
+            "xoff": float(v.get("xoff", 0.0)),
+            "yoff": float(v.get("yoff", 0.0)),
+            "ratio": (float(r) if r else None),
+            "size": (int(v["size"]) if v.get("size") else None),
+            "pos": ([int(pos[0]), int(pos[1])]
+                    if isinstance(pos, (list, tuple)) and len(pos) == 2 else None),
+        }
+
+    def _apply_picker_state(self, path):
+        """切到指定模型时，把选择器内部状态重置为该模型自己的独立参数。"""
+        v = self._view_for_path(path)
+        self._zoom = float(v.get("zoom", 1.0))
+        self._xoff = float(v.get("xoff", 0.0))
+        self._yoff = float(v.get("yoff", 0.0))
+        self._ratio = v.get("ratio", None)
+        self.size_px = int(v.get("size") or DEFAULT_LIVE2D_SIZE)
+        self.size_slider.blockSignals(True)
+        self.size_slider.setValue(self._size_to_slider(self.size_px))
+        self.size_slider.blockSignals(False)
+        self.size_val.setText("%d px" % self.size_px)
+        return v
 
     def _add_header(self, text):
         """往列表里加一行不可选中的分组标题。"""
@@ -4416,7 +4496,7 @@ class Live2DPicker(QDialog):
                 pass
             try:
                 # 从布局中移除
-                self.preview_lay.removeWidget(self._preview)
+                self.preview_view_lay.removeWidget(self._preview)
                 self._preview.setParent(None)
                 self._preview.deleteLater()
             except Exception:
@@ -4426,56 +4506,14 @@ class Live2DPicker(QDialog):
 
     def _load_preview(self, path):
         """加载预览：直接加载，不延迟。"""
-        if self._preview is not None and self._preview_path == path and hasattr(self._preview, "reload_model"):
-            v = self._views.get(_canon_path(path)) or {}
-            self._zoom = float(v.get("zoom", 1.0))
-            self._xoff = float(v.get("xoff", 0.0))
-            self._yoff = float(v.get("yoff", 0.0))
-            r = v.get("ratio", None)
-            self._ratio = float(r) if r else None
-            if v.get("size"):
-                self.size_px = int(v["size"])
-                self.size_slider.blockSignals(True)
-                self.size_slider.setValue(self._size_to_slider(self.size_px))
-                self.size_slider.blockSignals(False)
-                self.size_val.setText("%d px" % self.size_px)
-            try:
-                self._preview.reload_model(path, size=220, zoom=self._zoom, xoff=self._xoff,
-                                           yoff=self._yoff, ratio=self._ratio)
-                self._preview_path = path
-                self._sel_path = path
-                self.hint.hide()
-                self._sync_sliders()
-                return
-            except Exception:
-                self._clear_preview()
-        else:
-            self._clear_preview()
+        v = self._apply_picker_state(path)
+        # 预览区比桌面实模更容易受旧 FBO/旧模型状态影响，统一走“清旧 -> 重建”，
+        # 不再复用旧 preview 控件热切模型，避免出现侧边残影、镜像条、初始位置偏移。
+        self._clear_preview()
 
-        # 载入该模型已保存的构图/尺寸（没存过则默认整体显示 + 自动画布）
-        v = self._views.get(_canon_path(path)) or {}
-        self._zoom = float(v.get("zoom", 1.0))
-        self._xoff = float(v.get("xoff", 0.0))
-        self._yoff = float(v.get("yoff", 0.0))
-        r = v.get("ratio", None)
-        self._ratio = float(r) if r else None
-        if v.get("size"):                       # 该模型记过显示尺寸：同步到滑块
-            self.size_px = int(v["size"])
-            self.size_slider.blockSignals(True)
-            self.size_slider.setValue(self._size_to_slider(self.size_px))
-            self.size_slider.blockSignals(False)
-            self.size_val.setText("%d px" % self.size_px)
         self._spawn_preview(path)
         self._sync_sliders()
-        # 没保存过构图的模型：渲染出来后自动贴合一次（默认就紧贴、无大片空白）
-        if not v:
-            QTimer.singleShot(360, lambda p=path: self._autofit_if(p))
-        else:
-            QTimer.singleShot(220, self._sync_sliders)
-
-    def _autofit_if(self, path):
-        if self._preview is not None and self._sel_path == path:
-            self._fit_region(0.0, 1.0)
+        QTimer.singleShot(220, self._sync_sliders)
 
     def _fit_region(self, top, bottom):
         """让预览贴合指定竖直区间，并把结果读回选择器状态（供「应用」保存）。"""
@@ -4497,16 +4535,19 @@ class Live2DPicker(QDialog):
             # 使用较小的预览尺寸，减少内存占用
             preview_size = 220
             pv = Live2DPet(path, preview_size, self._zoom, self._xoff, self._yoff,
-                           self.preview_box, ratio=self._ratio, preview_mode=True)
+                           self.preview_view, ratio=self._ratio, preview_mode=True)
             pv.set_follow(False)
             pv.on_error = lambda *a: self._preview_failed()
             pv.on_resized = self._fit_preview
-            self.preview_lay.addWidget(pv, 0, Qt.AlignCenter)
+            self.preview_view_lay.addWidget(pv, 0, Qt.AlignCenter)
             pv.show()
             self._preview = pv
             self._preview_path = path
             self._sel_path = path
             self.hint.hide()
+            # 预览新建后补一轮“复位态”同步，确保内部画布/外层 QWidget 从干净状态起步，
+            # 避免某些模型首帧右侧挂出细条残影，只有点复位才恢复。
+            QTimer.singleShot(0, lambda: self._preview and self._preview.set_view(self._zoom, self._xoff, self._yoff))
         except Exception as e:  # noqa: BLE001
             self._sel_path = None
             self._preview_path = None
@@ -4518,9 +4559,16 @@ class Live2DPicker(QDialog):
         pv = self._preview
         if pv is None:
             return
-        max_h = 448
-        if pv.height() > max_h:
-            pv.set_live2d_size(max(120, int(max_h / max(0.8, pv.height_ratio()))))
+        max_w = max(180, self.preview_view.width())
+        max_h = max(220, self.preview_view.height())
+        cur_w = max(1, pv.width())
+        cur_h = max(1, pv.height())
+        if cur_w <= max_w and cur_h <= max_h:
+            return
+        ratio = max(cur_w / float(max_w), cur_h / float(max_h))
+        new_size = max(self.SIZE_MIN, int(round(pv.live2d_size() / ratio)))
+        if new_size < pv.live2d_size():
+            pv.set_live2d_size(new_size)
 
     def _preview_failed(self):
         self._clear_preview()
@@ -4578,6 +4626,7 @@ class Live2DPicker(QDialog):
         self._yoff = max(-2.0, min(2.0, self._yoff + dyoff))
         if self._preview is not None:
             self._preview.set_view(self._zoom, self._xoff, self._yoff)
+            QTimer.singleShot(0, self.preview_view.update)
 
     def _adj_ratio(self, d):
         base = self._preview.height_ratio() if self._preview is not None else (self._ratio or 1.4)
