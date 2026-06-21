@@ -3,7 +3,7 @@ setlocal
 cd /d %~dp0
 
 echo ============================================
-echo   DesktopPet v3.8.1 build script
+echo   DesktopPet v3.9.5 build script
 echo ============================================
 echo.
 echo Rules:

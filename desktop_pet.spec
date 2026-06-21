@@ -2,10 +2,10 @@
 """PyInstaller 打包脚本：生成 dist/DesktopPet/DesktopPet.exe（onedir，无控制台窗口）。
 
 构建：  .venv\\Scripts\\python.exe -m PyInstaller desktop_pet.spec --noconfirm
-版本：  v3.8.1
+版本：  v3.9.4
 说明：  live2d/ 模型文件夹通过 build_exe.bat 实体复制到 dist，不再使用软链接。
 """
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 datas, binaries, hiddenimports = [], [], []
 # live2d-py 带原生 DLL / .pyd（Cubism Core），必须整体收集
@@ -13,6 +13,14 @@ _d, _b, _h = collect_all("live2d")
 datas += _d
 binaries += _b
 hiddenimports += _h
+
+# send2trash 必须完整收集（包含所有子模块）
+_d2, _b2, _h2 = collect_all("send2trash")
+datas += _d2
+binaries += _b2
+hiddenimports += _h2
+hiddenimports += collect_submodules("send2trash")
+
 # 添加语音翻译数据库
 datas += [('voice_translations.json', '.')]
 hiddenimports += [
@@ -26,8 +34,9 @@ hiddenimports += [
     "affinity", "affinity_quotes",
     # v3.7 新增模块
     "tts_player", "holiday_greetings",
-    # 模型删除到回收站
+    # 模型删除到回收站 - 使用 collect_all 已经包含，这里保留作为备份
     "send2trash", "send2trash.win", "send2trash.exceptions", "send2trash.util",
+    "send2trash.plat_win",
     # v3.7.2：TTS 改用 PySide6 自带的 QtTextToSpeech（不再依赖 pyttsx3/pywin32）
     "PySide6.QtTextToSpeech",
 ]
