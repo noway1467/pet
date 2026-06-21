@@ -166,7 +166,7 @@ def builtin_favorites():
 
 
 APP_NAME = "桌面宠物"
-APP_VERSION = "3.9.3"
+APP_VERSION = "3.9.5"
 ACCENT = "#5BB8F5"
 
 # ──── 贴边自动隐藏参数 ────
@@ -457,6 +457,16 @@ class PetWindow(QWidget):
             if hasattr(self, '_chat_manager') and self._chat_manager:
                 self._chat_manager._timer.stop()
 
+        # 关键修复：销毁旧的摸头覆盖层，避免切换模型后摸头闪现旧模型
+        if hasattr(self, '_petting_overlay') and self._petting_overlay is not None:
+            try:
+                self._petting_overlay.hide()
+                self._petting_overlay.setParent(None)
+                self._petting_overlay.deleteLater()
+            except Exception:
+                pass
+            self._petting_overlay = None
+
         name = self.cfg["character"]
         if name == "live2d":
             try:
@@ -514,8 +524,36 @@ class PetWindow(QWidget):
         self.renderer.installEventFilter(self)
         self.renderer.setMouseTracking(True)   # 无按键也能收到 MouseMove，用于头部悬停换光标
         self.renderer.show()
+
+        # 关键修复：先清除mask和缓存，避免旧mask限制新窗口
+        self.clearMask()
+        self._input_mask_rect_cache = None
+
+        # resize窗口到新大小
         self._resize_keep_anchor(self.renderer.natural_size())
+
+        # 重建摸头覆盖层
+        if not hasattr(self, '_petting_overlay') or self._petting_overlay is None or self._petting_overlay.parent() != self:
+            self._petting_overlay = PettingOverlay(self, self)
+            self._petting_overlay.sync_geometry()
+
+        # 强制repaint整个窗口，类似"点击置顶"的效果
+        self.hide()
+        self.show()
+
+        # 确保窗口位置符合"不覆盖任务栏"设置
+        if self.cfg.get("avoid_taskbar", True):
+            self.move(self.x(), self._clamp_y(self.y()))
+
+        self.renderer.update()
+        self.update()
+        self.repaint()
+        QApplication.processEvents()
+
+        # 延迟同步，确保正确显示
         QTimer.singleShot(0, self._sync_input_mask)
+        QTimer.singleShot(50, lambda: (self.renderer.update(), self.update(), self.repaint()))
+        QTimer.singleShot(100, self._sync_input_mask)
         QTimer.singleShot(240, self._sync_input_mask)
         # Live2D/OpenGL 首帧加载阶段可能还没把透明 alpha 写稳；稍后再同步窗口形状，
         # 避免 Windows 合成层缓存到黑色矩形或裁剪遮罩脏帧。
@@ -854,6 +892,11 @@ class PetWindow(QWidget):
 
     def _start_petting_overlay(self):
         """启动摸头手势覆盖动画，只画手，不带动宠物窗口。"""
+        # 确保覆盖层存在（切换模型后可能被销毁）
+        if self._petting_overlay is None or not self._petting_overlay.isVisible():
+            if self._petting_overlay is None:
+                self._petting_overlay = PettingOverlay(self, self)
+
         self._petting_overlay_t = 0.0
         self._petting_overlay.sync_geometry()
         self._petting_overlay.setVisible(True)
@@ -3667,6 +3710,11 @@ class PetWindow(QWidget):
             pass
         self._schedule_layer_sync()
 
+        # 关键修复：强制刷新窗口Z序，确保置顶状态立即生效（不需要切换窗口）
+        # Windows 的 SetWindowPos 需要显式触发才会更新Z序
+        QTimer.singleShot(50, lambda: self._force_z_order_refresh(bool(checked)))
+        QTimer.singleShot(200, lambda: self._force_z_order_refresh(bool(checked)))
+
     def _toggle_avoid_taskbar(self, checked):
         self.cfg["avoid_taskbar"] = bool(checked)
         config.save(self.cfg)
@@ -3833,6 +3881,25 @@ class PetWindow(QWidget):
         except Exception:
             pass
 
+    def _force_z_order_refresh(self, on_top):
+        """强制刷新窗口Z序，确保置顶状态立即生效（Windows特定修复）。
+
+        Windows的窗口层级有时需要显式触发才会更新，尤其是从置顶改为非置顶时。
+        通过短暂hide+show或微调位置来强制DWM重新计算Z序。
+        """
+        try:
+            if not self.isVisible():
+                return
+            # 方法1：微调位置强制重绘（最可靠，无闪烁）
+            pos = self.pos()
+            self.move(pos.x(), pos.y() + 1)
+            QApplication.processEvents()
+            self.move(pos.x(), pos.y())
+            # 方法2：调用原生窗口层级刷新
+            _restack_window(self, on_top)
+        except Exception:
+            pass
+
     def _restore_pos(self):
         """恢复窗口位置：优先用当前模型自己的记忆，再用全局配置，最后用默认位置。"""
         model_mem = self._get_model_memory()
@@ -3866,6 +3933,9 @@ class PetWindow(QWidget):
         if not self._pos_ready:
             self.resize(new_size)      # 启动首建：先不锚定，交给 _restore_pos
             QTimer.singleShot(0, self._sync_input_mask)
+            # 确保覆盖层同步更新
+            if hasattr(self, '_petting_overlay') and self._petting_overlay:
+                self._petting_overlay.sync_geometry()
             return
         if self._edge is not None:     # 吸在边上：改尺寸后按当前(缩回/展开)重新贴边
             if self._slide_timer.isActive():
@@ -3876,6 +3946,9 @@ class PetWindow(QWidget):
             self._remember_edge()
             QTimer.singleShot(0, self._sync_input_mask)
             QTimer.singleShot(240, self._sync_input_mask)
+            # 确保覆盖层同步更新
+            if hasattr(self, '_petting_overlay') and self._petting_overlay:
+                self._petting_overlay.sync_geometry()
             return
         bcx = self.x() + self.width() / 2.0
         bottom = self.y() + self.height()
@@ -3889,6 +3962,9 @@ class PetWindow(QWidget):
         self._save_pos()
         QTimer.singleShot(0, self._sync_input_mask)
         QTimer.singleShot(240, self._sync_input_mask)
+        # 确保覆盖层同步更新
+        if hasattr(self, '_petting_overlay') and self._petting_overlay:
+            self._petting_overlay.sync_geometry()
 
     def _save_pos(self):
         self.cfg["pos"] = [self.x(), self.y()]
