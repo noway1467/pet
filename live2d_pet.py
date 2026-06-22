@@ -124,6 +124,17 @@ def _module_for(version):
     return live2d_v3 if version == "v3" else live2d_v2
 
 
+def reset_runtime(version):
+    """重置指定 Live2D 运行时；主窗口连续切换 model3 前用于清掉全局状态。"""
+    if version != "v3":
+        return
+    try:
+        live2d_v3.dispose()
+    except Exception:
+        pass
+    _inited.discard("v3")
+
+
 def discover_models(root, limit=5000):
     """递归扫描 root，找出所有 Live2D 模型设置 JSON。
 
@@ -248,6 +259,7 @@ class _Live2DGL(QOpenGLWidget):
                 % (model_path,))
         self.model_path = model_path
         self._preview_mode = bool(preview_mode)
+        self._shutting_down = False
         self.version = detect_version(model_path)
         self.l2d = _module_for(self.version)
         # Live2D 立绘多为竖图：用竖向窗口（高=宽×比例），配合库的等比适配，
@@ -857,6 +869,8 @@ class _Live2DGL(QOpenGLWidget):
     def content_inset(self):
         """窗口四周的透明留白(像素)：(左,上,右,下)，按真实渲染内容测量并缓存。
         让主程序"只在模型本体碰到屏幕边时才贴边"，而不是透明画布一靠近就触发。"""
+        if getattr(self, "_shutting_down", False):
+            return (0, 0, 0, 0)
         box = self._content_box
         if box is None:
             box = self._measure_content()
@@ -871,6 +885,8 @@ class _Live2DGL(QOpenGLWidget):
 
     def sync_alpha_mask(self, force=False):
         """按真实模型像素裁掉 OpenGL 透明区，避免透明失效时露出黑色画框。"""
+        if getattr(self, "_shutting_down", False):
+            return False
         if not force:
             return True
         now = time.perf_counter()
@@ -1512,6 +1528,9 @@ class _Live2DGL(QOpenGLWidget):
 
     def shutdown(self):
         """关闭并释放所有资源。"""
+        if getattr(self, "_shutting_down", False):
+            return
+        self._shutting_down = True
         self.timer.stop()
         if hasattr(self, "_mask_timer"):
             self._mask_timer.stop()
@@ -1538,6 +1557,9 @@ class _Live2DGL(QOpenGLWidget):
         super().hideEvent(ev)
 
     def showEvent(self, ev):
+        if getattr(self, "_shutting_down", False):
+            super().showEvent(ev)
+            return
         if not self.timer.isActive():
             self.timer.start(int(1000 / self.fps))
         if (hasattr(self, "_mask_timer")
@@ -1662,12 +1684,16 @@ class _Live2DGL(QOpenGLWidget):
                 pass
 
     def resizeGL(self, w, h):
+        if getattr(self, "_shutting_down", False):
+            return
         if self.model:
             self.model.Resize(w, h)
             self._apply_view()
 
 
     def paintGL(self):
+        if getattr(self, "_shutting_down", False):
+            return
         self._clear_gl_background()
         self.l2d.clearBuffer(0.0, 0.0, 0.0, 0.0)   # 透明背景
         self._prepare_transparent_blending()
@@ -1719,6 +1745,8 @@ class _Live2DGL(QOpenGLWidget):
             self._handle_render_error(e)
 
     def _handle_render_error(self, e):
+        if getattr(self, "_shutting_down", False):
+            return
         if self._errored:
             return
         self._errored = True
@@ -1748,6 +1776,7 @@ class Live2DPet(QWidget):
         self.setAttribute(Qt.WA_NoSystemBackground, True)
         self.setAutoFillBackground(False)
         self._preview_mode = bool(preview_mode)
+        self._shutting_down = False
         self._frame = None
         self._pending_resize_guard = 0
         # main.py 会给这些回调赋值（赋到本控件上，再桥接到离屏渲染器）
@@ -1781,6 +1810,8 @@ class Live2DPet(QWidget):
 
     # ---------- 每帧渲染：抓离屏 framebuffer → 重绘 ----------
     def _render_tick(self):
+        if self._shutting_down:
+            return
         gl = self._gl
         if gl is None:
             return
@@ -1924,8 +1955,16 @@ class Live2DPet(QWidget):
 
     # ---------- 生命周期 ----------
     def shutdown(self):
+        if self._shutting_down:
+            return
+        self._shutting_down = True
         try:
             self._render_timer.stop()
+        except Exception:
+            pass
+        try:
+            self.setUpdatesEnabled(False)
+            self.hide()
         except Exception:
             pass
         self._frame = None
@@ -1933,6 +1972,9 @@ class Live2DPet(QWidget):
         self._gl = None
         try:
             if gl is not None:
+                gl.on_error = None
+                gl.on_resized = None
+                gl.on_voice_with_text = None
                 gl.shutdown()
         except Exception:
             pass
@@ -1944,7 +1986,7 @@ class Live2DPet(QWidget):
             pass
 
     def showEvent(self, ev):
-        if not self._render_timer.isActive():
+        if not self._shutting_down and not self._render_timer.isActive():
             self._render_timer.start(int(1000 / max(1, self.fps)))
         super().showEvent(ev)
 

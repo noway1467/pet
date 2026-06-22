@@ -13,7 +13,7 @@ echo   - Never create or overwrite a project-root live2d folder
 echo.
 
 REM 1) Stop running app
-echo [1/8] Checking running app...
+echo [1/6] Checking running app...
 tasklist /FI "IMAGENAME eq DesktopPet.exe" 2>NUL | find /I /N "DesktopPet.exe">NUL
 if "%ERRORLEVEL%"=="0" (
     echo Found running DesktopPet.exe, stopping it...
@@ -22,7 +22,7 @@ if "%ERRORLEVEL%"=="0" (
 )
 
 REM 2) Ensure build + runtime dependencies (so every feature gets bundled)
-echo [2/8] Checking build/runtime dependencies...
+echo [2/6] Checking build/runtime dependencies...
 .venv\Scripts\python.exe -m pip show pyinstaller >nul 2>&1
 if errorlevel 1 (
     echo Installing PyInstaller...
@@ -47,7 +47,7 @@ if errorlevel 1 (
 )
 
 REM 3) Clean temp build dirs only
-echo [3/8] Cleaning temp build dirs...
+echo [3/6] Cleaning temp build dirs...
 if exist build (
     rmdir /s /q build >nul 2>&1
     if exist build (
@@ -63,7 +63,7 @@ if exist dist_build (
 )
 
 REM 4) Build into temp output
-echo [4/8] Building into dist_build...
+echo [4/6] Building into dist_build...
 .venv\Scripts\python.exe -m PyInstaller desktop_pet.spec --noconfirm --clean --distpath dist_build
 if errorlevel 1 (
     echo [ERROR] PyInstaller build failed.
@@ -71,7 +71,7 @@ if errorlevel 1 (
 )
 
 REM 5) Replace app files but keep models
-echo [5/8] Updating packaged files...
+echo [5/6] Updating packaged files...
 if not exist dist\DesktopPet mkdir dist\DesktopPet
 set "APP_DIST=dist\DesktopPet"
 set "NEW_INTERNAL=%APP_DIST%\_internal_new"
@@ -167,41 +167,8 @@ if errorlevel 1 (
 del /f /q "%NEW_EXE%" >nul 2>&1
 if exist "%OLD_INTERNAL%" rmdir /s /q "%OLD_INTERNAL%" >nul 2>&1
 
-if exist voice_translations.json (
-    copy /Y voice_translations.json dist\DesktopPet\ >nul
-    if errorlevel 1 (
-        echo [WARN] Failed to copy voice_translations.json
-    )
-)
-
-REM 6) Ensure model dirs exist
-echo [6/8] Ensuring model folders exist...
-if not exist dist\DesktopPet\live2d mkdir dist\DesktopPet\live2d
-powershell -NoProfile -Command "$favName = [string]([char]24120) + [char]29992; $fav = Join-Path 'dist\\DesktopPet\\live2d' $favName; if (-not (Test-Path -LiteralPath $fav)) { New-Item -ItemType Directory -Path $fav | Out-Null }"
-if errorlevel 1 (
-    echo [WARN] Failed to ensure favorites folder.
-)
-
-REM 7) Clean accidental empty root live2d shell only
-echo [7/8] Checking project-root live2d shell...
-if exist live2d (
-    dir /a /b live2d > "%TEMP%\desktop_pet_live2d_entries.txt" 2>nul
-    for %%I in ("%TEMP%\desktop_pet_live2d_entries.txt") do (
-        if %%~zI EQU 0 (
-            echo   - root live2d is empty, removing it.
-            rmdir /s /q live2d
-        ) else (
-            echo   - root live2d has files or subfolders, keeping it.
-        )
-    )
-    del /q "%TEMP%\desktop_pet_live2d_entries.txt" >nul 2>&1
-)
-
-REM 8) Copy docs and clean temp dirs
-echo [8/8] Copying docs and cleaning temp dirs...
-if exist CHANGELOG.md copy /Y CHANGELOG.md dist\DesktopPet\ >nul 2>&1
-powershell -NoProfile -Command "$note = Get-ChildItem -File -LiteralPath . | Where-Object { $_.Name -match 'v\d+\.\d+\.\d+\.txt$' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1; if ($note) { Copy-Item -LiteralPath $note.FullName -Destination 'dist\\DesktopPet' -Force }"
-if exist app_icon.ico copy /Y app_icon.ico dist\DesktopPet\ >nul 2>&1
+REM 6) Clean temp dirs. Do not touch dist\DesktopPet\live2d or root live2d.
+echo [6/6] Cleaning temp dirs...
 if exist build (
     rmdir /s /q build >nul 2>&1
     if exist build (
@@ -220,7 +187,6 @@ echo ============================================
 echo   Build complete
 echo ============================================
 echo Output: dist\DesktopPet\DesktopPet.exe
-echo Models: dist\DesktopPet\live2d
-echo Favorites folder: dist\DesktopPet\live2d
+echo Models folder: untouched
 echo.
 exit /b 0

@@ -31,11 +31,12 @@ PIXEL_CHARS = [(name, cls.label) for name, cls in CHARACTERS.items()]
 SCALES = [3, 4, 5, 6, 8]
 IMAGE_SIZES = [120, 160, 220, 280, 360]
 LIVE2D_SIZES = [120, 160, 200, 260, 320, 400, 500]
+WORKAREA_BOTTOM_SAFETY = 4
 # 新模型（还没单独调过大小）的默认尺寸：用固定值，不沿用上一个模型的尺寸，
 # 这样"每个模型各记各的大小、互不套用"（旧模型已有记忆的不受影响）。
 DEFAULT_LIVE2D_SIZE = 200
 DEFAULT_IMAGE_SIZE = 160
-# 通用"窗口动作"：靠移动窗口实现，任何渲染器（图片/像素/Live2D）都能用
+# 软件内置动作项：图片/像素在自身绘制层播放，Live2D 走窗口位移动作兜底。
 ACTION_ITEMS = [("jump", "起跳"), ("hop", "蹦跳"), ("nod", "点头"), ("wiggle", "摇头"),
                 ("tilt", "歪头"), ("lean", "侧倾"), ("spin", "转身"), ("dance", "跳舞")]
 ACTION_DUR = {"jump": 0.85, "hop": 0.6, "nod": 0.7, "wiggle": 0.75,
@@ -243,24 +244,193 @@ class PettingOverlay(QWidget):
         p.end()
 
 
-def _build_glove_path(unit=1.0):
-    """返回一只更圆润的二次元白手套路径：不自相交、不留洞，适合粗描边卡通风。"""
+def _capsule_path(x1, y1, x2, y2, radius, unit):
+    """构造一段圆头手指路径，用重叠填充避免关节露空。"""
+    dx, dy = x2 - x1, y2 - y1
+    length = max(0.001, math.hypot(dx, dy))
+    nx = -dy / length * radius
+    ny = dx / length * radius
     u = float(unit)
-    hand = QPainterPath()
-    hand.setFillRule(Qt.WindingFill)
-    # 掌心略倾斜、偏椭圆，让姿势从“平放”变成轻微弯曲按压感。
-    hand.addRoundedRect(QRectF(-11.0 * u, 0.8 * u, 21.5 * u, 15.4 * u), 8.7 * u, 8.7 * u)
-    for x, y, w, h, rx in (
-        (-11.0, -6.8, 4.7, 10.4, 2.5),
-        (-6.0, -10.6, 5.2, 14.8, 2.8),
-        (-0.6, -10.0, 5.0, 13.7, 2.7),
-        (4.5, -7.5, 4.4, 10.7, 2.4),
-    ):
-        hand.addRoundedRect(QRectF(x * u, y * u, w * u, h * u), rx * u, rx * u)
-    # 拇指做成更大、更外翻的椭圆，卡通味更强，也更像按下去的猫爪手套。
-    hand.addEllipse(QRectF(-17.6 * u, 4.4 * u, 11.4 * u, 11.8 * u))
-    hand.addRoundedRect(QRectF(-6.2 * u, 14.8 * u, 11.8 * u, 7.8 * u), 2.8 * u, 2.8 * u)
-    return hand.simplified()
+    path = QPainterPath(QPointF((x1 + nx) * u, (y1 + ny) * u))
+    path.lineTo(QPointF((x2 + nx) * u, (y2 + ny) * u))
+    path.quadTo(QPointF(x2 * u, y2 * u), QPointF((x2 - nx) * u, (y2 - ny) * u))
+    path.lineTo(QPointF((x1 - nx) * u, (y1 - ny) * u))
+    path.quadTo(QPointF(x1 * u, y1 * u), QPointF((x1 + nx) * u, (y1 + ny) * u))
+    path.closeSubpath()
+    return path
+
+
+def _finger_path(cx, base_y, tip_y, base_w, tip_w, lean, curl, unit=1.0):
+    """构造游戏画面里那种圆润手指；按压时只轻微弯，不做反关节动作。"""
+    u = float(unit)
+    tip_x = cx + lean + curl * 0.18
+    tip_y = tip_y + curl * 1.0
+    mid_y = (base_y + tip_y) * 0.5
+    path = QPainterPath(QPointF((cx - base_w * 0.50) * u, base_y * u))
+    path.cubicTo(QPointF((cx - base_w * 0.56) * u, (base_y - 7.0) * u),
+                 QPointF((tip_x - tip_w * 0.62) * u, (mid_y + 1.2) * u),
+                 QPointF((tip_x - tip_w * 0.50) * u, (tip_y + tip_w * 0.48) * u))
+    path.quadTo(QPointF(tip_x * u, (tip_y - tip_w * 0.42) * u),
+                QPointF((tip_x + tip_w * 0.50) * u, (tip_y + tip_w * 0.48) * u))
+    path.cubicTo(QPointF((tip_x + tip_w * 0.62) * u, (mid_y + 1.2) * u),
+                 QPointF((cx + base_w * 0.56) * u, (base_y - 7.0) * u),
+                 QPointF((cx + base_w * 0.50) * u, base_y * u))
+    path.closeSubpath()
+    return path
+
+
+def _thumb_path(curl, unit=1.0):
+    """右手拇指：贴在掌侧并朝上，模拟游戏里摸头手的收拢姿势。"""
+    u = float(unit)
+    bend = curl * 0.9
+    path = QPainterPath(QPointF(-11.2 * u, 7.2 * u))
+    path.cubicTo(QPointF(-14.2 * u, 4.8 * u),
+                 QPointF(-16.2 * u, (0.4 + bend) * u),
+                 QPointF(-16.9 * u, (-6.5 + bend) * u))
+    path.cubicTo(QPointF(-17.4 * u, (-11.6 + bend) * u),
+                 QPointF(-15.0 * u, (-14.6 + bend) * u),
+                 QPointF(-12.2 * u, (-14.2 + bend) * u))
+    path.cubicTo(QPointF(-9.6 * u, (-13.8 + bend) * u),
+                 QPointF(-8.7 * u, (-10.2 + bend) * u),
+                 QPointF(-8.7 * u, (-6.8 + bend) * u))
+    path.lineTo(QPointF(-8.5 * u, 5.9 * u))
+    path.cubicTo(QPointF(-9.3 * u, 6.3 * u),
+                 QPointF(-10.2 * u, 6.7 * u),
+                 QPointF(-11.2 * u, 7.2 * u))
+    path.closeSubpath()
+    return path
+
+
+def _palm_path(unit=1.0):
+    """游戏式掌心：圆润、扁平，适合叠在角色头顶。"""
+    u = float(unit)
+    path = QPainterPath(QPointF(-12.8 * u, 1.5 * u))
+    path.cubicTo(QPointF(-14.0 * u, 7.8 * u),
+                 QPointF(-12.7 * u, 16.8 * u),
+                 QPointF(-6.8 * u, 21.0 * u))
+    path.cubicTo(QPointF(-1.7 * u, 24.6 * u),
+                 QPointF(8.0 * u, 24.4 * u),
+                 QPointF(12.8 * u, 19.6 * u))
+    path.cubicTo(QPointF(16.0 * u, 16.3 * u),
+                 QPointF(15.6 * u, 7.5 * u),
+                 QPointF(13.5 * u, 1.4 * u))
+    path.cubicTo(QPointF(11.0 * u, -4.6 * u),
+                 QPointF(5.5 * u, -6.8 * u),
+                 QPointF(-0.4 * u, -6.2 * u))
+    path.lineTo(QPointF(-7.6 * u, -5.4 * u))
+    path.cubicTo(QPointF(-10.9 * u, -5.0 * u),
+                 QPointF(-12.4 * u, -2.2 * u),
+                 QPointF(-12.8 * u, 1.5 * u))
+    path.closeSubpath()
+    return path
+
+
+def _wrist_path(unit=1.0):
+    u = float(unit)
+    path = QPainterPath(QPointF(-6.6 * u, 21.6 * u))
+    path.lineTo(QPointF(8.0 * u, 21.8 * u))
+    path.cubicTo(QPointF(9.8 * u, 23.7 * u),
+                 QPointF(9.7 * u, 28.5 * u),
+                 QPointF(7.7 * u, 30.3 * u))
+    path.lineTo(QPointF(-6.7 * u, 29.9 * u))
+    path.cubicTo(QPointF(-8.7 * u, 27.8 * u),
+                 QPointF(-8.6 * u, 23.8 * u),
+                 QPointF(-6.6 * u, 21.6 * u))
+    path.closeSubpath()
+    return path
+
+
+def _hand_finger_specs(curl):
+    """游戏画面摸头手：四指同向朝上，中指略长，小指略短。"""
+    return (
+        (-8.4, 4.2, -24.0, 4.2, 3.2, -0.15, curl * 0.50),  # 食指
+        (-2.7, 3.7, -29.0, 4.4, 3.4, -0.05, curl * 0.62),  # 中指
+        (3.1, 4.2, -25.8, 4.2, 3.2, 0.10, curl * 0.54),    # 无名指
+        (8.3, 5.8, -20.2, 3.7, 2.9, 0.20, curl * 0.42),    # 小指
+    )
+
+
+def _right_mitten_body_path(unit=1.0, press=0.0):
+    """参考 mittens 图右手：右手连指手套本体，拇指在左侧。"""
+    u = float(unit)
+    press = max(0.0, min(1.0, float(press)))
+    squash = 1.0 + press * 0.035
+
+    def pt(x, y):
+        return QPointF(x * u, y * u * squash)
+
+    path = QPainterPath(pt(-6.4, 19.5))
+    path.cubicTo(pt(-8.8, 17.0), pt(-10.0, 13.3), pt(-10.3, 9.6))
+    # 拇指沿掌侧斜向伸出，保留参考图里右手的方向，不再画成四指手。
+    path.cubicTo(pt(-15.0, 10.0), pt(-20.3, 7.5), pt(-22.4, 3.0))
+    path.cubicTo(pt(-24.2, -0.8), pt(-21.8, -5.1), pt(-17.7, -5.4))
+    path.cubicTo(pt(-13.4, -5.7), pt(-10.5, -1.0), pt(-8.1, 2.1))
+    path.cubicTo(pt(-7.7, -1.5), pt(-7.6, -5.2), pt(-7.6, -9.1))
+    path.cubicTo(pt(-7.6, -20.4), pt(-0.5, -27.6), pt(7.6, -27.6))
+    path.cubicTo(pt(15.8, -27.6), pt(22.4, -20.8), pt(22.4, -9.9))
+    path.lineTo(pt(22.4, 12.7))
+    path.cubicTo(pt(22.4, 16.8), pt(20.9, 19.2), pt(18.6, 20.0))
+    path.lineTo(pt(-6.4, 19.5))
+    path.closeSubpath()
+    return path
+
+
+def _right_mitten_cuff_rect(unit=1.0, press=0.0):
+    u = float(unit)
+    press = max(0.0, min(1.0, float(press)))
+    return QRectF(-8.6 * u, (18.6 + press * 0.35) * u,
+                  31.5 * u, 12.2 * u)
+
+
+def _draw_game_petting_hand(p, unit, press=0.0, cursor=False):
+    """绘制 mittens 图右手风格的连指手套，并用于真正摸头动画。"""
+    u = float(unit)
+    press = max(0.0, min(1.0, float(press)))
+    fill = QColor("#FFFFFF")
+    line = QColor("#000000")
+
+    outline = QPen(line)
+    outline.setWidthF(max(1.4, 2.2 * u))
+    outline.setCapStyle(Qt.RoundCap)
+    outline.setJoinStyle(Qt.RoundJoin)
+
+    thin = QPen(line)
+    thin.setWidthF(max(1.0, 1.15 * u))
+    thin.setCapStyle(Qt.RoundCap)
+    thin.setJoinStyle(Qt.RoundJoin)
+
+    body = _right_mitten_body_path(u, press)
+    cuff = _right_mitten_cuff_rect(u, press)
+
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(0, 0, 0, 34 if cursor else 46))
+    p.drawPath(QPainterPath(body).translated(1.0 * u, 1.35 * u))
+    p.drawRoundedRect(cuff.translated(1.0 * u, 1.35 * u), 1.6 * u, 1.6 * u)
+
+    # 手套本体：白色填充 + 粗黑轮廓，按参考图右手重画。
+    p.setPen(outline)
+    p.setBrush(fill)
+    p.drawPath(body)
+
+    # 参考图右手内侧的弧形高光和小短线。
+    p.setPen(thin)
+    p.setBrush(Qt.NoBrush)
+    shine = QPainterPath(QPointF(9.2 * u, -20.2 * u))
+    shine.cubicTo(QPointF(16.0 * u, -18.6 * u),
+                  QPointF(18.4 * u, -12.0 * u),
+                  QPointF(18.1 * u, -4.5 * u))
+    p.drawPath(shine)
+    p.drawLine(QPointF(18.2 * u, 2.5 * u), QPointF(18.2 * u, 5.0 * u))
+
+    # 袖口：黑底白竖条，跟 mittens 图右手保持一致。
+    p.setPen(QPen(line, max(1.4, 1.9 * u), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(line)
+    p.drawRoundedRect(cuff, 1.5 * u, 1.5 * u)
+
+    stripe_w = 2.8 * u
+    for x in (-5.8, 0.6, 7.5, 14.4):
+        p.fillRect(QRectF(x * u, cuff.top() + 1.2 * u,
+                          stripe_w, cuff.height() - 2.4 * u), fill)
 
 
 class PetWindow(QWidget):
@@ -295,6 +465,7 @@ class PetWindow(QWidget):
         self._leave_ms = 0             # 鼠标离开累计时长，到阈值就缩回
         self._layer_sync_pending = False
         self._input_mask_rect_cache = None
+        self._post_switch_dock_token = 0
 
         self._build_renderer()
         self._apply_flags()
@@ -333,12 +504,12 @@ class PetWindow(QWidget):
         self._drag_move_timer.timeout.connect(self._drag_move_flush)
         # 摸头手势覆盖动画：只动画"手"，不再让宠物本体左右晃动
         self._petting_overlay_t = -1.0
-        self._petting_overlay_dur = 0.9
+        self._petting_overlay_dur = 1.15
         self._petting_timer = QTimer(self)
         self._petting_timer.setTimerType(Qt.PreciseTimer)
         self._petting_timer.timeout.connect(self._petting_tick)
         self._petting_overlay = PettingOverlay(self, self)
-        self._petting_overlay.sync_geometry()
+        self._sync_petting_overlay()
         self._pet_cursor_cache = None
         self._warm_petting_assets()
         # 贴边隐藏：滑动动画 + 监视光标决定划出/缩回
@@ -460,6 +631,9 @@ class PetWindow(QWidget):
         # 关键修复：销毁旧的摸头覆盖层，避免切换模型后摸头闪现旧模型
         if hasattr(self, '_petting_overlay') and self._petting_overlay is not None:
             try:
+                if hasattr(self, "_petting_timer"):
+                    self._petting_timer.stop()
+                self._petting_overlay_t = -1.0
                 self._petting_overlay.hide()
                 self._petting_overlay.setParent(None)
                 self._petting_overlay.deleteLater()
@@ -519,6 +693,7 @@ class PetWindow(QWidget):
             self.cfg["scale"] = int(scale)
             self.renderer = PixelPet(self.cfg["character"], int(scale),
                                      self.cfg["style"], self)
+            self.renderer.set_follow(self.cfg.get("follow", True))
 
         self.renderer.move(0, 0)
         self.renderer.installEventFilter(self)
@@ -535,7 +710,7 @@ class PetWindow(QWidget):
         # 重建摸头覆盖层
         if not hasattr(self, '_petting_overlay') or self._petting_overlay is None or self._petting_overlay.parent() != self:
             self._petting_overlay = PettingOverlay(self, self)
-            self._petting_overlay.sync_geometry()
+            self._sync_petting_overlay()
 
         # 强制repaint整个窗口，类似"点击置顶"的效果
         self.hide()
@@ -543,7 +718,7 @@ class PetWindow(QWidget):
 
         # 确保窗口位置符合"不覆盖任务栏"设置
         if self.cfg.get("avoid_taskbar", True):
-            self.move(self.x(), self._clamp_y(self.y()))
+            self.move(*self._clamp_pos(self.x(), self.y()))
 
         self.renderer.update()
         self.update()
@@ -560,6 +735,7 @@ class PetWindow(QWidget):
         QTimer.singleShot(900, self._refresh_live2d_alpha_mask)
         QTimer.singleShot(1800, self._refresh_live2d_alpha_mask)
         QTimer.singleShot(3200, self._refresh_live2d_alpha_mask)
+        self._schedule_workarea_enforcement()
         self._schedule_layer_sync()
 
     def _warm_petting_assets(self):
@@ -585,6 +761,19 @@ class PetWindow(QWidget):
                 fn(force=True)
         except Exception:
             pass
+        self._enforce_workarea(save=True)
+
+    def _sync_petting_overlay(self):
+        """切换模型期间覆盖层会短暂置空，事件回调必须容忍这个过渡态。"""
+        overlay = getattr(self, "_petting_overlay", None)
+        if overlay is None:
+            return
+        try:
+            if overlay.parent() is self:
+                overlay.sync_geometry()
+        except RuntimeError:
+            # Qt 对象可能已进入 deleteLater 队列；清空引用，避免后续事件继续碰它。
+            self._petting_overlay = None
 
     # ------------------------------------------------------------------ #
     #  鼠标：拖动 + 点击 + 右键菜单（通过事件过滤器统一处理）
@@ -601,6 +790,7 @@ class PetWindow(QWidget):
                 return False
             if t == QEvent.MouseButtonPress and ev.button() == Qt.LeftButton:
                 self._clear_head_cursor()
+                self._cancel_pending_switch_dock()
                 gp = ev.globalPosition().toPoint()
                 self._drag_candidate_off = gp - self.frameGeometry().topLeft()
                 self._press_global = ev.globalPosition().toPoint()
@@ -644,7 +834,7 @@ class PetWindow(QWidget):
                 tgt = gp - self._drag_off
                 # 合并高频 move 事件：记录目标位置，首个事件立即落位、随后按 ~125Hz 节流，
                 # 避免每个鼠标事件都触发分层窗口重合成导致拖动卡顿。
-                self._drag_target = (tgt.x(), self._clamp_y(tgt.y()))
+                self._drag_target = self._clamp_pos(tgt.x(), tgt.y())
                 if not self._drag_move_timer.isActive():
                     self._drag_applied = self._drag_target
                     self.move(*self._drag_target)
@@ -675,21 +865,19 @@ class PetWindow(QWidget):
                     self._save_pos()
                     return True   # 直接返回，不执行后续任何动作
 
-                # 非头部点击才执行通用 react 和语录。
-                # Live2D 的"关闭（点击不动作）"应当真正屏蔽 click 类动作，而不是只关整窗位移动画。
+                # 非头部点击才执行通用动作和语录。
+                # “关闭（点击不动作）”对像素/图片也应生效，不能再走各自默认随机反应。
                 if not head_clicked:
                     # 养成模式下，点身体只记互动/弹反馈，不驱动 Live2D 点击动作，
                     # 否则会和好感度气泡、摸头手势感混在一起，看起来像“乱跳”。
-                    live2d_click_enabled = (
-                        not self.cfg.get("nurture_mode", False) and (
-                            self.cfg.get("character") != "live2d"
-                            or self.cfg.get("click_action_enabled", True)
-                        )
+                    click_action_enabled = (
+                        not self.cfg.get("nurture_mode", False)
+                        and self.cfg.get("click_action_enabled", True)
                     )
                     if moved:
                         self.renderer.react("drop")
-                    elif live2d_click_enabled:
-                        self.renderer.react("click")
+                    elif click_action_enabled:
+                        self._play_configured_click_action()
                     if self.cfg.get("nurture_mode", False):
                         # 养成模式：戳身体/陪玩加分并气泡提示收益（取代通用点击语录，避免双气泡）
                         self._nurture_quiet_action("drag_play" if moved else "body_poke")
@@ -749,6 +937,7 @@ class PetWindow(QWidget):
         """鼠标确实移动超过阈值后才进入拖拽，避免普通点击触发拖拽副作用。"""
         if self._drag_off is not None:
             return
+        self._cancel_pending_switch_dock()
         self._drag_off = self._drag_candidate_off
         self._drag_candidate_off = None
         self._moved = True
@@ -762,7 +951,7 @@ class PetWindow(QWidget):
         if hasattr(self.renderer, "react"):
             self.renderer.react("grab")
         tgt = gp - self._drag_off
-        self._drag_target = (tgt.x(), self._clamp_y(tgt.y()))
+        self._drag_target = self._clamp_pos(tgt.x(), tgt.y())
         self._drag_applied = self._drag_target
         self.move(*self._drag_target)
 
@@ -801,59 +990,21 @@ class PetWindow(QWidget):
     def _pet_cursor(self):
         """构造并缓存"摸头小手"光标。
 
-        二次元白手套：与摸头覆盖动画同款手型，使用同一份路径数据，避免光标和覆盖层
-        长得不一样。"""
+        与摸头覆盖动画同款右手模型，避免光标和覆盖层长得不一样。"""
         if getattr(self, "_pet_cursor_cache", None) is not None:
             return self._pet_cursor_cache
         cur = QCursor(Qt.PointingHandCursor)
         try:
-            size = 40
+            size = 48
             pm = QPixmap(size, size)
             pm.fill(Qt.transparent)
             p = QPainter(pm)
             p.setRenderHint(QPainter.Antialiasing, True)
-            # 把原点挪到手掌中心附近，随后整只手都在以原点为中心的坐标里绘制
-            p.translate(21, 10)
-            u = 1.0
-            hand = _build_glove_path(u)
-
-            # 阴影
-            p.fillPath(QPainterPath(hand).translated(1.0, 1.6), QColor(0, 0, 0, 56))
-            # 描边 + 白手套填充
-            edge = QPen(QColor("#202124"))
-            edge.setWidthF(1.9)
-            edge.setJoinStyle(Qt.RoundJoin)
-            edge.setCapStyle(Qt.RoundCap)
-            p.setPen(edge)
-            p.setBrush(QColor("#FFFFFF"))
-            p.drawPath(hand)
-
-            # 细节：掌心体积感 + 指尖高光 + 袖口分隔
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(255, 255, 255, 214))
-            p.drawEllipse(QRectF(-5.2 * u, 4.8 * u, 8.2 * u, 5.2 * u))
-            p.setBrush(QColor(255, 255, 255, 190))
-            for hx, hy, hw, hh in (
-                (-10.1, -6.2, 2.1, 2.8),
-                (-5.0, -8.8, 2.1, 3.0),
-                (0.1, -8.0, 2.1, 2.9),
-                (5.0, -5.5, 2.0, 2.5),
-                (-14.8, 9.2, 2.2, 1.9),
-            ):
-                p.drawEllipse(QRectF(hx * u, hy * u, hw * u, hh * u))
-            guide = QPen(QColor(176, 181, 194, 175))
-            guide.setWidthF(0.95)
-            guide.setCapStyle(Qt.RoundCap)
-            p.setPen(guide)
-            p.drawLine(QPointF(-5.8 * u, 1.2 * u), QPointF(-5.8 * u, -3.8 * u))
-            p.drawLine(QPointF(-0.8 * u, 0.8 * u), QPointF(-0.8 * u, -5.2 * u))
-            p.drawLine(QPointF(4.2 * u, 1.2 * u), QPointF(4.2 * u, -2.7 * u))
-            p.drawLine(QPointF(-5.2 * u, 18.6 * u), QPointF(4.0 * u, 18.6 * u))
-
+            p.translate(24, 24)
+            _draw_game_petting_hand(p, 0.72, press=0.12, cursor=True)
             p.end()
 
-            # 热点在指尖与掌心之间（手"按"在头上的接触点）
-            cur = QCursor(pm, 20, 14)
+            cur = QCursor(pm, 24, 31)
         except Exception:
             pass
         self._pet_cursor_cache = cur
@@ -893,32 +1044,40 @@ class PetWindow(QWidget):
     def _start_petting_overlay(self):
         """启动摸头手势覆盖动画，只画手，不带动宠物窗口。"""
         # 确保覆盖层存在（切换模型后可能被销毁）
-        if self._petting_overlay is None or not self._petting_overlay.isVisible():
-            if self._petting_overlay is None:
+        overlay = getattr(self, "_petting_overlay", None)
+        if overlay is None or not overlay.isVisible():
+            if overlay is None:
                 self._petting_overlay = PettingOverlay(self, self)
+                overlay = self._petting_overlay
 
         self._petting_overlay_t = 0.0
-        self._petting_overlay.sync_geometry()
-        self._petting_overlay.setVisible(True)
-        self._petting_overlay.raise_()
+        self._sync_petting_overlay()
+        overlay.setVisible(True)
+        overlay.raise_()
         self.renderer.setCursor(QCursor(Qt.BlankCursor))
         self._head_cursor_on = False
         if not self._petting_timer.isActive():
             self._petting_timer.start(33)
-        self._petting_overlay.update()
+        overlay.update()
 
     def _petting_tick(self):
+        overlay = getattr(self, "_petting_overlay", None)
+        if overlay is None:
+            self._petting_timer.stop()
+            self._petting_overlay_t = -1.0
+            return
         self._petting_overlay_t += 0.033 / max(0.1, self._petting_overlay_dur)
         if self._petting_overlay_t >= 1.0:
             self._petting_timer.stop()
             self._petting_overlay_t = -1.0
-            self._petting_overlay.setVisible(False)
+            overlay.setVisible(False)
             try:
                 pos = self.renderer.mapFromGlobal(QCursor.pos())
                 self._update_head_cursor(pos.x(), pos.y())
             except Exception:
                 self.renderer.unsetCursor()
-        self._petting_overlay.update()
+            return
+        overlay.update()
 
     def _petting_overlay_rect(self):
         """手势覆盖动画的手掌落点区域：比摸头热区略大一点，但仍只在头顶。"""
@@ -931,62 +1090,39 @@ class PetWindow(QWidget):
         content_top = int(top_inset)
         content_w = max(1, self.width() - int(l_in) - int(r_in))
         content_h = max(1, self.height() - content_top)
-        w = max(54, int(content_w * 0.30))
-        h = max(60, int(content_h * 0.24))
+        w = max(76, int(content_w * 0.36))
+        h = max(66, int(content_h * 0.28))
         x = int(content_left + (content_w - w) / 2)
-        y = max(0, int(top_inset) - int(h * 0.22))
+        y = max(0, int(top_inset) - int(h * 0.26))
         return QRectF(x, y, w, h)
 
     @staticmethod
     def _draw_petting_hand(p, rect, progress):
-        """在给定区域画一只抚摸中的白手套。"""
+        """在给定区域画一只真实右手：落下、轻压、揉摸、抬起。"""
         p.save()
         p.setRenderHint(QPainter.Antialiasing, True)
-        arc = math.sin(progress * math.pi)
-        pat = abs(math.sin(progress * 2 * math.pi * 1.2))
-        sway = math.sin(progress * 2 * math.pi * 0.8) * rect.width() * 0.032
-        press = pat * rect.height() * 0.11
-        lift = (1.0 - arc) * rect.height() * 0.12
-        squash_x = 0.94 + pat * 0.03
-        squash_y = 1.02 - pat * 0.10
-        p.translate(rect.center().x() + sway, rect.top() + rect.height() * 0.26 + press - lift)
-        p.scale(squash_x, squash_y)
-        p.rotate(math.sin(progress * 2 * math.pi * 0.8) * 4.5)
+        fade = math.sin(progress * math.pi)
+        settle = 1.0 - (1.0 - fade) * (1.0 - fade)
+        rub = math.sin(progress * 4.0 * math.pi)
+        press = max(0.0, min(1.0, fade * (0.72 + 0.28 * (0.5 + 0.5 * math.sin(progress * 4.0 * math.pi - math.pi / 2)))))
 
-        edge = QPen(QColor("#202124"))
-        edge.setWidthF(max(1.8, rect.width() * 0.024))
-        edge.setJoinStyle(Qt.RoundJoin)
-        edge.setCapStyle(Qt.RoundCap)
-        p.setPen(edge)
-        p.setBrush(QColor("#FFFFFF"))
-
-        unit = rect.width() / 40.0
-        hand = _build_glove_path(unit)
-
-        p.fillPath(QPainterPath(hand).translated(1.0 * unit, 1.5 * unit), QColor(0, 0, 0, 54))
-        p.drawPath(hand)
-
+        # 接触阴影跟着下压强度变化，避免看起来像悬浮贴纸。
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, 214))
-        p.drawEllipse(QRectF(-5.2 * unit, 4.8 * unit, 8.2 * unit, 5.2 * unit))
-        p.setBrush(QColor(255, 255, 255, 190))
-        for hx, hy, hw, hh in (
-            (-10.1, -6.2, 2.1, 2.8),
-            (-5.0, -8.8, 2.1, 3.0),
-            (0.1, -8.0, 2.1, 2.9),
-            (5.0, -5.5, 2.0, 2.5),
-            (-14.8, 9.2, 2.2, 1.9),
-        ):
-            p.drawEllipse(QRectF(hx * unit, hy * unit, hw * unit, hh * unit))
+        p.setBrush(QColor(60, 75, 96, int(42 * press)))
+        p.drawEllipse(QRectF(rect.center().x() - rect.width() * 0.25,
+                             rect.top() + rect.height() * 0.68,
+                             rect.width() * 0.50,
+                             rect.height() * (0.10 + 0.04 * press)))
 
-        guide = QPen(QColor(176, 181, 194, 175))
-        guide.setWidthF(max(0.8, rect.width() * 0.010))
-        guide.setCapStyle(Qt.RoundCap)
-        p.setPen(guide)
-        p.drawLine(QPointF(-5.8 * unit, 1.2 * unit), QPointF(-5.8 * unit, -3.8 * unit))
-        p.drawLine(QPointF(-0.8 * unit, 0.8 * unit), QPointF(-0.8 * unit, -5.2 * unit))
-        p.drawLine(QPointF(4.2 * unit, 1.2 * unit), QPointF(4.2 * unit, -2.7 * unit))
-        p.drawLine(QPointF(-5.2 * unit, 18.6 * unit), QPointF(4.0 * unit, 18.6 * unit))
+        x = rect.center().x() + rub * rect.width() * 0.050
+        y = rect.top() + rect.height() * 0.39 - (1.0 - settle) * rect.height() * 0.18 + press * rect.height() * 0.030
+        p.setOpacity(max(0.0, min(1.0, fade * 1.35)))
+        p.translate(x, y)
+        p.rotate(-2.0 + rub * 2.8)
+        p.scale(1.0 + press * 0.018, 1.0 - press * 0.026)
+
+        unit = min(rect.width() / 58.0, rect.height() / 86.0)
+        _draw_game_petting_hand(p, unit, press=press)
         p.restore()
 
     def _nurture_quiet_action(self, action):
@@ -1518,6 +1654,15 @@ class PetWindow(QWidget):
             self._populate_live2d_expression_menu(m)
             self._populate_live2d_voice_menu(m)
 
+        if self.cfg["character"] in CHARACTERS:
+            a = m.addAction("看向鼠标")
+            a.setCheckable(True)
+            a.setChecked(self.cfg.get("follow", True))
+            a.triggered.connect(self._toggle_follow)
+            act_menu = m.addMenu("动作")
+            win_sub = act_menu.addMenu("内置动作")
+            self._populate_builtin_action_menu(win_sub, include_click=True)
+
         if self.cfg["character"] == "image":
             a = m.addAction("镜像翻转（左右朝向）")
             a.setCheckable(True)
@@ -1532,11 +1677,7 @@ class PetWindow(QWidget):
             a.setChecked(self.cfg.get("gravity", True))
             a.triggered.connect(self._toggle_gravity)
             act_menu = m.addMenu("动作")
-            for key, label in (("hop", "蹦跳"), ("jump", "起跳"), ("nod", "点头"),
-                               ("wiggle", "摇头"), ("tilt", "歪头"), ("lean", "侧倾"),
-                               ("spin", "转身"), ("dance", "跳舞")):
-                act_menu.addAction(label).triggered.connect(
-                    lambda _=False, k=key: self._play_action(k))
+            self._populate_builtin_action_menu(act_menu, include_click=True)
 
         m.addSeparator()
 
@@ -1705,28 +1846,32 @@ class PetWindow(QWidget):
         # ── 分隔线 + 软件内置窗口动作 ──
         sub.addSeparator()
         win_sub = sub.addMenu("内置动作")
+        self._populate_builtin_action_menu(win_sub, include_click=True)
 
+    def _populate_builtin_action_menu(self, win_sub, include_click=True):
+        """填充软件内置动作，并按需加入“点击宠物时”的配置入口。"""
         # 点击宠物时触发的动作：可换成别的动作，或关闭（点击不再"跳"）
-        click_sub = win_sub.addMenu("点击宠物时")
-        enabled = (self.cfg.get("click_action_enabled", True)
-                   and not self.cfg.get("nurture_mode", False))
-        cur_click = self.cfg.get("click_action", "hop")
-        off = click_sub.addAction("关闭（点击不动作）")
-        off.setCheckable(True)
-        off.setChecked(not enabled)
-        if self.cfg.get("nurture_mode", False):
-            off.setText("关闭（养成模式下点击不动作）")
-        off.triggered.connect(lambda _=False: self._set_click_action(None))
-        click_sub.addSeparator()
-        for key, label in ACTION_ITEMS:
-            a = click_sub.addAction(label)
-            a.setCheckable(True)
-            a.setChecked(enabled and cur_click == key)
+        if include_click:
+            click_sub = win_sub.addMenu("点击宠物时")
+            enabled = (self.cfg.get("click_action_enabled", True)
+                       and not self.cfg.get("nurture_mode", False))
+            cur_click = self.cfg.get("click_action", "hop")
+            off = click_sub.addAction("关闭（点击不动作）")
+            off.setCheckable(True)
+            off.setChecked(not enabled)
             if self.cfg.get("nurture_mode", False):
-                a.setEnabled(False)
-            a.triggered.connect(lambda _=False, k=key: self._set_click_action(k))
+                off.setText("关闭（养成模式下点击不动作）")
+            off.triggered.connect(lambda _=False: self._set_click_action(None))
+            click_sub.addSeparator()
+            for key, label in ACTION_ITEMS:
+                a = click_sub.addAction(label)
+                a.setCheckable(True)
+                a.setChecked(enabled and cur_click == key)
+                if self.cfg.get("nurture_mode", False):
+                    a.setEnabled(False)
+                a.triggered.connect(lambda _=False, k=key: self._set_click_action(k))
+            win_sub.addSeparator()
 
-        win_sub.addSeparator()
         # 立即播放一次某个内置动作
         for key, label in ACTION_ITEMS:
             win_sub.addAction(label).triggered.connect(
@@ -2015,7 +2160,7 @@ class PetWindow(QWidget):
             if not callable(natural_size):
                 return
             self._resize_keep_anchor(natural_size())
-            self._petting_overlay.sync_geometry()
+            self._sync_petting_overlay()
             QTimer.singleShot(0, self._sync_input_mask)
             QTimer.singleShot(240, self._sync_input_mask)
 
@@ -2354,6 +2499,7 @@ class PetWindow(QWidget):
             self.cfg["image_path"] = fav["path"]
             self.cfg["character"] = "image"
         elif fav.get("type") == "live2d" and os.path.exists(fav["path"]):
+            self._reset_live2d_runtime_before_switch(fav["path"])
             self.cfg["live2d_model"] = fav["path"]
             self.cfg["character"] = "live2d"
         else:
@@ -2380,16 +2526,27 @@ class PetWindow(QWidget):
             self.renderer.set_facing(self.cfg["facing"])
 
     def _play_action(self, action):
-        if isinstance(self.renderer, ImagePet):
+        if isinstance(self.renderer, (ImagePet, PixelPet)):
             self.renderer.play(action)
         else:
-            # Live2D / 像素：用移动整窗的方式做动作；Live2D 再顺带触发模型自带动作
+            # Live2D：模型无对应内置动作时，用轻量窗口位移兜底。
             self._play_window_action(action)
             if hasattr(self.renderer, "play_motion"):
                 try:
                     self.renderer.play_motion("", None)
                 except Exception:
                     pass
+
+    def _play_configured_click_action(self):
+        """按“点击宠物时”设置触发动作；像素/图片不再走各自随机默认点击反应。"""
+        if self.cfg.get("nurture_mode", False) or not self.cfg.get("click_action_enabled", True):
+            return False
+        if self.cfg.get("character") == "live2d":
+            if hasattr(self.renderer, "react"):
+                self.renderer.react("click")
+            return True
+        self._play_action(self.cfg.get("click_action", "hop"))
+        return True
 
     # --- 通用"窗口动作"：移动整窗实现 起跳/点头/跳舞…，任何渲染器都能用 ---
     def _play_window_action(self, name):
@@ -2519,8 +2676,7 @@ class PetWindow(QWidget):
         self.renderer.set_look((c.x() - cx) / 320.0, (cy - c.y()) / 320.0)
 
     def _start_fall(self):
-        geo = self._workarea_rect()
-        self._floor = geo.bottom() - self.height() + 1
+        self._floor = self._clamp_y(10**9)
         self._landed = False
         if self.y() >= self._floor:
             self._save_pos()
@@ -2550,6 +2706,8 @@ class PetWindow(QWidget):
     def _screen_geo(self):
         """当前所在屏幕的物理整屏矩形（隐藏要真的滑到屏幕外，所以用整屏而非工作区）。"""
         screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return QRect(0, 0, 1920, 1080)
         return screen.geometry()
 
     def refresh_content_box(self):
@@ -3627,7 +3785,18 @@ class PetWindow(QWidget):
             return
         self._set_live2d_model(path)
 
+    def _reset_live2d_runtime_before_switch(self, path):
+        """连续选择 model3 前重置 v3 运行时，避免旧模型状态污染新模型首帧。"""
+        try:
+            from live2d_pet import reset_runtime
+            current_version = getattr(getattr(getattr(self, "renderer", None), "_gl", None), "version", None)
+            if current_version == "v3":
+                reset_runtime("v3")
+        except Exception:
+            pass
+
     def _set_live2d_model(self, path):
+        self._reset_live2d_runtime_before_switch(path)
         self.cfg["live2d_model"] = path
         self.cfg["character"] = "live2d"
         state = self._resolve_live2d_state(path)
@@ -3654,6 +3823,7 @@ class PetWindow(QWidget):
                            pinned=self._pinned_model_paths(models),
                            feature_provider=self._get_model_features_cached)
         if self._exec_centered_dialog(dlg) and dlg.selected_path:
+            self._reset_live2d_runtime_before_switch(dlg.selected_path)
             self.cfg["live2d_model"] = dlg.selected_path
             self.cfg["character"] = "live2d"
             self.cfg["live2d_size"] = int(dlg.size_px)
@@ -3710,33 +3880,161 @@ class PetWindow(QWidget):
             pass
         self._schedule_layer_sync()
 
-        # 关键修复：强制刷新窗口Z序，确保置顶状态立即生效（不需要切换窗口）
-        # Windows 的 SetWindowPos 需要显式触发才会更新Z序
-        QTimer.singleShot(50, lambda: self._force_z_order_refresh(bool(checked)))
-        QTimer.singleShot(200, lambda: self._force_z_order_refresh(bool(checked)))
+        self._force_z_order_refresh(bool(checked))
+        QTimer.singleShot(80, lambda: self._force_z_order_refresh(bool(checked)))
 
     def _toggle_avoid_taskbar(self, checked):
         self.cfg["avoid_taskbar"] = bool(checked)
         config.save(self.cfg)
         # 立刻把当前窗口拉回（或放出）工作区
-        self.move(self.x(), self._clamp_y(self.y()))
+        self.move(*self._clamp_pos(self.x(), self.y()))
         self._save_pos()
+        self._schedule_workarea_enforcement()
 
     def _workarea_rect(self):
         """当前所在屏幕的可用区域：开启"不覆盖任务栏"时排除任务栏，否则用整屏。"""
         screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return QRect(0, 0, 1920, 1080)
         if self.cfg.get("avoid_taskbar", True):
+            win32_rect = self._win32_workarea_rect(screen)
+            if win32_rect is not None:
+                return win32_rect
             return screen.availableGeometry()
         return screen.geometry()
 
-    def _clamp_y(self, y):
-        """限制Y坐标：不覆盖任务栏时，让模型底部（而非画布底部）不超过工作区。"""
+    def _win32_workarea_rect(self, screen):
+        """Windows 下用系统工作区校准任务栏范围，避免 Qt 偶发返回整屏。"""
+        if not sys.platform.startswith("win"):
+            return None
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class RECT(ctypes.Structure):
+                _fields_ = [
+                    ("left", wintypes.LONG),
+                    ("top", wintypes.LONG),
+                    ("right", wintypes.LONG),
+                    ("bottom", wintypes.LONG),
+                ]
+
+            class MONITORINFO(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", wintypes.DWORD),
+                    ("rcMonitor", RECT),
+                    ("rcWork", RECT),
+                    ("dwFlags", wintypes.DWORD),
+                ]
+
+            user32 = ctypes.windll.user32
+            user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+            user32.MonitorFromWindow.restype = wintypes.HMONITOR
+            user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFO)]
+            user32.GetMonitorInfoW.restype = wintypes.BOOL
+
+            hwnd = int(self.winId())
+            monitor = user32.MonitorFromWindow(wintypes.HWND(hwnd), 2)  # MONITOR_DEFAULTTONEAREST
+            if not monitor:
+                return None
+            info = MONITORINFO()
+            info.cbSize = ctypes.sizeof(MONITORINFO)
+            if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                return None
+
+            mon = info.rcMonitor
+            work = info.rcWork
+            mon_w = max(1, int(mon.right - mon.left))
+            mon_h = max(1, int(mon.bottom - mon.top))
+            qt_screen = screen.geometry()
+            sx = qt_screen.width() / float(mon_w)
+            sy = qt_screen.height() / float(mon_h)
+
+            left = qt_screen.left() + int(round((work.left - mon.left) * sx))
+            top = qt_screen.top() + int(round((work.top - mon.top) * sy))
+            right = qt_screen.left() + int(round((work.right - mon.left) * sx))
+            bottom = qt_screen.top() + int(round((work.bottom - mon.top) * sy))
+            rect = QRect(left, top, max(1, right - left), max(1, bottom - top))
+            if qt_screen.contains(rect.topLeft()) or qt_screen.intersects(rect):
+                return rect
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _clamp_axis(value, lo, hi, prefer_hi=False):
+        """限制单轴坐标；区间倒置时优先保住右/下边界。"""
+        value = int(round(value))
+        lo = int(round(lo))
+        hi = int(round(hi))
+        if lo > hi:
+            return hi if prefer_hi else lo
+        return max(lo, min(value, hi))
+
+    def _clamp_pos(self, x, y):
+        """限制窗口位置：水平按可见内容贴边，垂直按可信底部留白避让任务栏。"""
         r = self._workarea_rect()
-        # 获取模型内容的底部留白
-        _, _, _, b_in = self._content_inset()
-        # 让模型底部（画布底部-底部留白）贴齐工作区底部
-        max_y = r.bottom() - (self.height() - b_in) + 1
-        return max(r.top(), min(int(y), max_y))
+        w, h = max(1, self.width()), max(1, self.height())
+        try:
+            l_in, t_in, r_in, b_in = self._content_inset()
+        except Exception:
+            l_in = t_in = r_in = b_in = 0
+        b_in = self._bottom_inset_for_workarea(b_in)
+        safety = WORKAREA_BOTTOM_SAFETY if self.cfg.get("avoid_taskbar", True) else 0
+        min_x = r.left() - int(round(l_in))
+        max_x = r.right() + 1 - (w - int(round(r_in)))
+        min_y = r.top() - int(round(t_in))
+        max_y = r.bottom() + 1 - safety - (h - int(round(b_in)))
+        return (
+            self._clamp_axis(x, min_x, max_x, prefer_hi=True),
+            self._clamp_axis(y, min_y, max_y, prefer_hi=True),
+        )
+
+    def _clamp_y(self, y):
+        """限制Y坐标：不覆盖任务栏时，模型可信底边不超过工作区。"""
+        return self._clamp_pos(self.x(), y)[1]
+
+    def _bottom_inset_for_workarea(self, bottom_inset):
+        """任务栏避让使用可信底部留白：允许下移，但限制误测造成的过冲。
+
+        个别模型的黑袜/黑鞋、首帧黑底或显卡读回差异，会让内容测量把下半身误判成
+        透明留白。完全不信任底部留白会导致脚下空一块还不能下移；完全信任又可能
+        把身体塞进任务栏。这里折中：保留一段可信留白，超过上限的部分一律视为误测。
+        """
+        try:
+            inset = max(0, int(round(bottom_inset)))
+        except Exception:
+            inset = 0
+        if not self.cfg.get("avoid_taskbar", True):
+            return inset
+        h = max(1, int(self.height()))
+        cap = max(24, min(120, int(round(h * 0.22))))
+        return min(inset, cap)
+
+    def _enforce_workarea(self, save=False):
+        """在模型首帧/重测透明留白后，再把当前位置收回工作区。"""
+        if not self.cfg.get("avoid_taskbar", True) or self.renderer is None:
+            return
+        slide_timer = getattr(self, "_slide_timer", None)
+        if (self._drag_off is not None or self._drag_candidate_off is not None
+                or (slide_timer is not None and slide_timer.isActive())):
+            return
+        if self._edge is not None:
+            shown, hidden = self._dock_positions(self._edge)
+            self.move(hidden if self._edge_hidden else shown)
+            if save:
+                self._remember_edge()
+            return
+        nx, ny = self._clamp_pos(self.x(), self.y())
+        if nx != self.x() or ny != self.y():
+            self.move(nx, ny)
+            if save:
+                self._save_pos()
+
+    def _schedule_workarea_enforcement(self):
+        """Live2D 内容留白要等首帧后才准，多次收敛可避免重启/切模压到任务栏。"""
+        for delay in (0, 240, 900, 1800, 3200):
+            QTimer.singleShot(delay, lambda: self._enforce_workarea(save=True))
 
     def _bottom_right_pos(self):
         """右下角停靠坐标：让模型"可见本体"贴住工作区右缘与底缘（任务栏上方），
@@ -3745,11 +4043,13 @@ class PetWindow(QWidget):
         full = self._screen_geo()
         w, h = self.width(), self.height()
         l_in, t_in, r_in, b_in = self._content_inset()
+        b_in = self._bottom_inset_for_workarea(b_in)
+        safety = WORKAREA_BOTTOM_SAFETY if self.cfg.get("avoid_taskbar", True) else 0
         nx = geo.right() + 1 - (w - r_in)    # 模型右缘贴工作区右缘（右侧透明留白滑出屏外）
-        ny = geo.bottom() + 1 - (h - b_in)   # 模型底缘贴工作区底缘（恰在任务栏上方）
+        ny = geo.bottom() + 1 - safety - (h - b_in)  # 可信底部留白可滑到任务栏上方，身体不越过工作区
         nx = max(full.left() - l_in, nx)     # 极小模型/大留白时别整体跑出屏幕
         ny = max(full.top() - t_in, ny)
-        return int(nx), int(ny)
+        return self._clamp_pos(nx, ny)
 
     def _dock_bottom_right(self):
         """把宠物停到屏幕右下角（任务栏上方）。切换形象后调用，做到"不留空"。"""
@@ -3762,6 +4062,18 @@ class PetWindow(QWidget):
         self.move(nx, ny)
         self._pos_ready = True
         self._save_pos()
+
+    def _cancel_pending_switch_dock(self):
+        """用户开始交互后，切换模型排队的延迟右下角校准不应再抢位置。"""
+        self._post_switch_dock_token += 1
+
+    def _dock_bottom_right_if_current(self, token):
+        if token != self._post_switch_dock_token:
+            return
+        if self._drag_off is not None or self._drag_candidate_off is not None:
+            self._cancel_pending_switch_dock()
+            return
+        self._dock_bottom_right()
 
 
     def _toggle_click_through(self, checked):
@@ -3885,18 +4197,17 @@ class PetWindow(QWidget):
         """强制刷新窗口Z序，确保置顶状态立即生效（Windows特定修复）。
 
         Windows的窗口层级有时需要显式触发才会更新，尤其是从置顶改为非置顶时。
-        通过短暂hide+show或微调位置来强制DWM重新计算Z序。
+        关闭置顶时仅 HWND_NOTOPMOST 会让窗口留在普通窗口最前面，因此再显式 lower。
         """
         try:
             if not self.isVisible():
                 return
-            # 方法1：微调位置强制重绘（最可靠，无闪烁）
-            pos = self.pos()
-            self.move(pos.x(), pos.y() + 1)
-            QApplication.processEvents()
-            self.move(pos.x(), pos.y())
-            # 方法2：调用原生窗口层级刷新
-            _restack_window(self, on_top)
+            if on_top:
+                _restack_window(self, True)
+            else:
+                _restack_window(self, False)
+                self.lower()
+                _restack_window(self, False, after=1)  # HWND_BOTTOM：立刻落到普通窗口后面
         except Exception:
             pass
 
@@ -3910,7 +4221,7 @@ class PetWindow(QWidget):
                 self._edge = edge_side
                 cross = int(model_mem.get("edge_cross") or self.cfg.get("edge_cross", 0) or 0)
                 if edge_side in ("left", "right"):
-                    self.move(self.x(), self._clamp_y(cross))
+                    self.move(*self._clamp_pos(self.x(), cross))
                 else:
                     self.move(cross, self.y())
                 shown, _hidden = self._dock_positions(edge_side)
@@ -3922,20 +4233,19 @@ class PetWindow(QWidget):
         # 没有吸附：恢复普通位置
         pos = model_mem.get("pos") or self.cfg.get("pos")
         if isinstance(pos, list) and len(pos) == 2:
-            self.move(int(pos[0]), self._clamp_y(int(pos[1])))
+            self.move(*self._clamp_pos(int(pos[0]), int(pos[1])))
         else:
             nx, ny = self._bottom_right_pos()     # 首次/无记忆：紧贴右下角，不留空
             self.move(nx, ny)
         self._pos_ready = True     # 之后切换/缩放都按底部中心锚定
+        self._schedule_workarea_enforcement()
 
     def _resize_keep_anchor(self, new_size):
         """换形象/改尺寸时让宠物"脚下"位置不动：保持窗口底部中心不变。"""
         if not self._pos_ready:
             self.resize(new_size)      # 启动首建：先不锚定，交给 _restore_pos
             QTimer.singleShot(0, self._sync_input_mask)
-            # 确保覆盖层同步更新
-            if hasattr(self, '_petting_overlay') and self._petting_overlay:
-                self._petting_overlay.sync_geometry()
+            self._sync_petting_overlay()
             return
         if self._edge is not None:     # 吸在边上：改尺寸后按当前(缩回/展开)重新贴边
             if self._slide_timer.isActive():
@@ -3946,25 +4256,19 @@ class PetWindow(QWidget):
             self._remember_edge()
             QTimer.singleShot(0, self._sync_input_mask)
             QTimer.singleShot(240, self._sync_input_mask)
-            # 确保覆盖层同步更新
-            if hasattr(self, '_petting_overlay') and self._petting_overlay:
-                self._petting_overlay.sync_geometry()
+            self._sync_petting_overlay()
             return
         bcx = self.x() + self.width() / 2.0
         bottom = self.y() + self.height()
         self.resize(new_size)
         nx = round(bcx - new_size.width() / 2.0)
         ny = round(bottom - new_size.height())
-        geo = self._workarea_rect()
-        nx = max(geo.left(), min(nx, geo.right() - new_size.width()))
-        ny = max(geo.top(), min(ny, geo.bottom() - new_size.height()))
+        nx, ny = self._clamp_pos(nx, ny)
         self.move(nx, ny)
         self._save_pos()
         QTimer.singleShot(0, self._sync_input_mask)
         QTimer.singleShot(240, self._sync_input_mask)
-        # 确保覆盖层同步更新
-        if hasattr(self, '_petting_overlay') and self._petting_overlay:
-            self._petting_overlay.sync_geometry()
+        self._sync_petting_overlay()
 
     def _save_pos(self):
         self.cfg["pos"] = [self.x(), self.y()]
@@ -3982,8 +4286,7 @@ class PetWindow(QWidget):
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         self._input_mask_rect_cache = None
-        if hasattr(self, "_petting_overlay"):
-            self._petting_overlay.sync_geometry()
+        self._sync_petting_overlay()
         QTimer.singleShot(0, self._sync_input_mask)
         self._schedule_layer_sync()
 
@@ -3991,8 +4294,8 @@ class PetWindow(QWidget):
         super().moveEvent(ev)
         # 覆盖层是子控件，几何随父窗口本地坐标不变；仅摸头动画进行时才需重新对齐+置顶，
         # 拖动时每个 move 事件都同步是白费功夫，会拖慢跟手。
-        if getattr(self, "_petting_overlay_t", -1.0) >= 0.0 and hasattr(self, "_petting_overlay"):
-            self._petting_overlay.sync_geometry()
+        if getattr(self, "_petting_overlay_t", -1.0) >= 0.0:
+            self._sync_petting_overlay()
         # 动画播放期间跳过气泡更新，由 _act_tick 统一处理；避免每帧 moveEvent 触发重复的智能定位计算
         if (self._drag_off is None and self._drag_candidate_off is None
                 and not (hasattr(self, "_act_timer") and self._act_timer.isActive())  # 动画期间不在这里更新
@@ -4007,11 +4310,15 @@ class PetWindow(QWidget):
         """切换形象时重建渲染器，并把新模型统一停到屏幕右下角（任务栏上方）、紧贴边角不留空。
 
         按需求：每次切换都回到右下角，不再沿用各模型上次的自由位置/贴边状态。"""
+        self._post_switch_dock_token += 1
+        dock_token = self._post_switch_dock_token
         self._build_renderer()
         # 立即先停到右下角；渲染器此刻还没出图、量不到透明留白，
         # 等它出一帧后再贴一次，让模型"本体"真正贴住边角。
         self._dock_bottom_right()
-        QTimer.singleShot(500, self._dock_bottom_right)
+        for delay in (500, 1200, 2400):
+            QTimer.singleShot(delay, lambda token=dock_token: self._dock_bottom_right_if_current(token))
+        self._schedule_workarea_enforcement()
 
         # 切换模型后重新启动聊天系统（延迟2秒，避免立即弹出气泡）
         if hasattr(self, '_chat_manager') and self._chat_manager and self.cfg.get("chat_enabled", True):
@@ -4131,6 +4438,8 @@ class Live2DPicker(QDialog):
         self._preview = None
         self._preview_path = None
         self._pending_path = None                  # 防抖：待加载预览的模型路径
+        self._preview_generation = 0               # 防止旧预览的延迟回调误操作新预览
+        self._closing = False
         self._preview_timer = QTimer(self)         # 选择稳定后才真正加载预览
         self._preview_timer.setSingleShot(True)
         self._preview_timer.timeout.connect(self._do_load_preview)
@@ -4562,23 +4871,38 @@ class Live2DPicker(QDialog):
 
     def _clear_preview(self):
         """清理预览渲染器，释放OpenGL资源和内存。"""
-        if self._preview is not None:
+        self._preview_generation += 1
+        preview = self._preview
+        self._preview = None
+        self._preview_path = None
+        if preview is not None:
             try:
-                # 确保在OpenGL上下文中清理
-                self._preview.makeCurrent()
-                self._preview.shutdown()
-                self._preview.doneCurrent()
+                preview.on_error = None
+                preview.on_resized = None
+                preview.on_voice_with_text = None
             except Exception:
                 pass
             try:
-                # 从布局中移除
-                self.preview_view_lay.removeWidget(self._preview)
-                self._preview.setParent(None)
-                self._preview.deleteLater()
+                preview.hide()
             except Exception:
                 pass
-            self._preview = None
-            self._preview_path = None
+            try:
+                self.preview_view_lay.removeWidget(preview)
+            except Exception:
+                pass
+            try:
+                preview.setParent(None)
+            except Exception:
+                pass
+            try:
+                preview.shutdown()
+            except Exception:
+                pass
+            try:
+                preview.deleteLater()
+            except Exception:
+                pass
+            QTimer.singleShot(0, lambda: QApplication.sendPostedEvents(None, QEvent.DeferredDelete))
 
     def _load_preview(self, path):
         """加载预览：直接加载，不延迟。"""
@@ -4586,10 +4910,25 @@ class Live2DPicker(QDialog):
         # 预览区比桌面实模更容易受旧 FBO/旧模型状态影响，统一走“清旧 -> 重建”，
         # 不再复用旧 preview 控件热切模型，避免出现侧边残影、镜像条、初始位置偏移。
         self._clear_preview()
+        self._sync_sliders()
+        self._queue_preview_spawn(path)
 
+    def _queue_preview_spawn(self, path, delay=30):
+        generation = self._preview_generation
+        QTimer.singleShot(delay, lambda p=path, g=generation: self._spawn_preview_if_current(p, g))
+
+    def _spawn_preview_if_current(self, path, generation):
+        if self._closing or generation != self._preview_generation or not self.isVisible():
+            return
+        cur = self.listw.currentItem()
+        current_path = cur.data(Qt.UserRole) if cur is not None else None
+        if path is None or path != self._pending_path or path != current_path:
+            return
+        if self._preview is not None:
+            return
         self._spawn_preview(path)
         self._sync_sliders()
-        QTimer.singleShot(220, self._sync_sliders)
+        QTimer.singleShot(220, lambda g=generation: self._sync_sliders() if g == self._preview_generation else None)
 
     def _fit_region(self, top, bottom):
         """让预览贴合指定竖直区间，并把结果读回选择器状态（供「应用」保存）。"""
@@ -4613,8 +4952,8 @@ class Live2DPicker(QDialog):
             pv = Live2DPet(path, preview_size, self._zoom, self._xoff, self._yoff,
                            self.preview_view, ratio=self._ratio, preview_mode=True)
             pv.set_follow(False)
-            pv.on_error = lambda *a: self._preview_failed()
-            pv.on_resized = self._fit_preview
+            pv.on_error = lambda *a, _pv=pv: self._preview_failed(_pv)
+            pv.on_resized = lambda *a, _pv=pv: self._fit_preview(_pv)
             self.preview_view_lay.addWidget(pv, 0, Qt.AlignCenter)
             pv.show()
             self._preview = pv
@@ -4623,16 +4962,20 @@ class Live2DPicker(QDialog):
             self.hint.hide()
             # 预览新建后补一轮“复位态”同步，确保内部画布/外层 QWidget 从干净状态起步，
             # 避免某些模型首帧右侧挂出细条残影，只有点复位才恢复。
-            QTimer.singleShot(0, lambda: self._preview and self._preview.set_view(self._zoom, self._xoff, self._yoff))
+            QTimer.singleShot(0, lambda _pv=pv: (
+                _pv is self._preview and _pv.set_view(self._zoom, self._xoff, self._yoff)
+            ))
         except Exception as e:  # noqa: BLE001
             self._sel_path = None
             self._preview_path = None
             self.hint.setText("无法预览：%s" % e)
             self.hint.show()
 
-    def _fit_preview(self):
+    def _fit_preview(self, preview=None):
         """预览随模型画布比例变化后，缩到不超过预览框。"""
-        pv = self._preview
+        pv = preview or self._preview
+        if preview is not None and preview is not self._preview:
+            return
         if pv is None:
             return
         max_w = max(180, self.preview_view.width())
@@ -4646,7 +4989,9 @@ class Live2DPicker(QDialog):
         if new_size < pv.live2d_size():
             pv.set_live2d_size(new_size)
 
-    def _preview_failed(self):
+    def _preview_failed(self, preview=None):
+        if preview is not None and preview is not self._preview:
+            return
         self._clear_preview()
         self.hint.setText("⚠ 该模型无法渲染")
         self.hint.show()
@@ -4709,14 +5054,14 @@ class Live2DPicker(QDialog):
         self._ratio = max(0.55, min(2.8, base + d))   # 改为手动比例
         if self._sel_path:
             self._clear_preview()
-            self._spawn_preview(self._sel_path)
+            self._queue_preview_spawn(self._sel_path)
 
     def _reset(self):
         # 复位：构图归位 + 画布回到自动
         self._zoom, self._xoff, self._yoff, self._ratio = 1.0, 0.0, 0.0, None
         if self._sel_path:
             self._clear_preview()
-            self._spawn_preview(self._sel_path)
+            self._queue_preview_spawn(self._sel_path)
         self._sync_sliders()
         QTimer.singleShot(220, self._sync_sliders)
 
@@ -4783,6 +5128,7 @@ class Live2DPicker(QDialog):
 
     def done(self, r):
         """关闭对话框时彻底清理资源。"""
+        self._closing = True
         self._preview_timer.stop()
         self._clear_preview()
         super().done(r)
