@@ -4183,11 +4183,11 @@ class PetWindow(QWidget):
     def _sync_window_layers(self):
         self._layer_sync_pending = False
         try:
-            _restack_window(self, bool(self.cfg.get("always_on_top", True)))
+            _restack_window(self, bool(self.cfg.get("always_on_top", False)))
         except Exception:
             pass
         try:
-            self._chat_bubble.set_always_on_top(bool(self.cfg.get("always_on_top", True)))
+            self._chat_bubble.set_always_on_top(bool(self.cfg.get("always_on_top", False)))
             if self._chat_bubble.isVisible():
                 self._chat_bubble.sync_window_layer()
         except Exception:
