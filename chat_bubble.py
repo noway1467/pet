@@ -31,6 +31,8 @@ if sys.platform.startswith("win"):
             ctypes.c_int, ctypes.c_int, ctypes.c_uint,
         ]
         _USER32.SetWindowPos.restype = wintypes.BOOL
+        _USER32.GetForegroundWindow.argtypes = []
+        _USER32.GetForegroundWindow.restype = wintypes.HWND
         _HWND_TOPMOST = -1
         _HWND_NOTOPMOST = -2
         _SWP_NOSIZE = 0x0001
@@ -49,6 +51,16 @@ def _window_hwnd(widget):
         return None
     try:
         hwnd = int(widget.winId())
+    except Exception:
+        return None
+    return hwnd or None
+
+
+def _foreground_hwnd():
+    if _USER32 is None:
+        return None
+    try:
+        hwnd = int(_USER32.GetForegroundWindow())
     except Exception:
         return None
     return hwnd or None
@@ -1218,7 +1230,8 @@ class IntelligentChatManager:
         self._click_quote_enabled = bool(enabled)
 
     def say(self, message=None, context=None, reschedule=True, allow_tts=True,
-            from_click=False, interaction=False, lock_position=False):
+            from_click=False, interaction=False, lock_position=False,
+            from_auto_interval=False):
         """立即说话。主动调用时会重置自动播放定时器，避免冲突。
 
         reschedule=False 用于内部定时器/问候触发：由调用方（_on_timer/start）统一排程，
@@ -1226,7 +1239,9 @@ class IntelligentChatManager:
         from_click=True：来自点击/戳身体宠物身体触发的语录，既受"点击弹语录"开关控制，
         也受冷却限制（同一条语录播完 + 0.5s 内不再触发）。
         interaction=True：来自摸头等明确手势触发的语录，摸头本就排除在"点击弹语录"
-        开关之外（仍会说），但同样受冷却限制，避免连续摸头/连点刷屏。"""
+        开关之外（仍会说），但同样受冷却限制，避免连续摸头/连点刷屏。
+        from_auto_interval=True：仅定时间隔语录使用。未开启置顶时，显示气泡后把窗口
+        压回原前台窗口后面，避免自动闲聊打断用户当前窗口。"""
 
         # 点击 / 互动触发的语录统一过冷却闸：
         #   - from_click 还要再过"点击弹语录"开关；
@@ -1260,9 +1275,12 @@ class IntelligentChatManager:
         self._is_speaking = True
         disp = max(3000, min(10000, 2500 + len(text) * 150))
         QTimer.singleShot(disp + 500, self._clear_speaking_flag)
+        layer_anchor = self._auto_interval_layer_anchor() if from_auto_interval else None
         if self.bubble.show_message(text, lock_position=lock_position) is False:
             self._is_speaking = False
             return
+        if from_auto_interval:
+            self._restore_auto_interval_layer(layer_anchor)
         self._last_play_time = datetime.now()
 
         # 主动调用时，停止并重新安排下次自动播放，避免紧接着又弹出
@@ -1405,11 +1423,50 @@ class IntelligentChatManager:
         """定时触发。"""
         # 检查是否需要时间问候
         if self._should_greet():
-            self._time_greeting()
+            self._time_greeting(from_auto_interval=True)
         else:
-            self.say()
+            self.say(from_auto_interval=True)
 
         self._schedule_next()
+
+    def _auto_interval_layer_anchor(self):
+        """记录自动语录弹出前的前台窗口；只有非置顶状态才需要恢复层级。"""
+        parent = self.bubble.parentWidget() or self.bubble.parent()
+        try:
+            if parent is not None and bool(getattr(parent, "cfg", {}).get("always_on_top", False)):
+                return None
+        except Exception:
+            pass
+        fg = _foreground_hwnd()
+        if not fg:
+            return None
+        if fg in (_window_hwnd(parent), _window_hwnd(self.bubble)):
+            return None
+        return fg
+
+    def _restore_auto_interval_layer(self, anchor_hwnd):
+        """自动间隔语录不应该把非置顶宠物抬到用户当前窗口前面。"""
+        parent = self.bubble.parentWidget() or self.bubble.parent()
+
+        def restore():
+            try:
+                if parent is not None and bool(getattr(parent, "cfg", {}).get("always_on_top", False)):
+                    return
+            except Exception:
+                pass
+            bubble_hwnd = _window_hwnd(self.bubble)
+            if anchor_hwnd and bubble_hwnd:
+                _restack_window(self.bubble, False, after=anchor_hwnd)
+                if parent is not None:
+                    _restack_window(parent, False, after=bubble_hwnd)
+            elif parent is not None:
+                drop = getattr(parent, "_force_z_order_refresh", None)
+                if callable(drop):
+                    drop(False)
+
+        restore()
+        QTimer.singleShot(0, restore)
+        QTimer.singleShot(80, restore)
 
     def _should_greet(self):
         """是否应该发送时间问候。"""
@@ -1431,7 +1488,7 @@ class IntelligentChatManager:
 
         return False
 
-    def _time_greeting(self):
+    def _time_greeting(self, from_auto_interval=False):
         """时间问候。"""
         hour = datetime.now().hour
 
@@ -1448,7 +1505,7 @@ class IntelligentChatManager:
 
         greetings = self._greetings_for(key)
 
-        self._say_greeting(greetings)
+        self._say_greeting(greetings, from_auto_interval=from_auto_interval)
 
     def _greetings_for(self, key):
         """按当前模式取该时段的问候列表：养成 > 雌小鬼 > 伴侣 > 普通；取不到就回退普通问候。"""
@@ -1473,11 +1530,12 @@ class IntelligentChatManager:
                 pass
         return TIME_GREETINGS[key]
 
-    def _say_greeting(self, greetings):
+    def _say_greeting(self, greetings, from_auto_interval=False):
         """随机说一句问候，排除"语录管理"里删除的问候语；全删了则回退原列表。"""
         greetings = self._active(greetings) or list(greetings)
         if greetings:
-            self.say(random.choice(greetings), reschedule=False)
+            self.say(random.choice(greetings), reschedule=False,
+                     from_auto_interval=from_auto_interval)
 
     def _get_next_message(self):
         """获取下一条消息（顺序播放，播完打乱重来）。

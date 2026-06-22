@@ -9,7 +9,7 @@ DEFAULTS = {
     "character": "slime",      # slime | cat | image | live2d
     "scale": 5,                # 像素放大倍数（程序化角色）
     "style": "pixel",          # pixel | smooth（程序化角色画风）
-    "always_on_top": True,     # 是否总在最前
+    "always_on_top": False,    # 是否总在最前
     "avoid_taskbar": True,      # 不让宠物窗口盖住任务栏（把窗口限制在屏幕工作区内）
     "click_through": False,    # 鼠标穿透（开启后无法拖动）
     "pos": None,               # 上次位置 [x, y]（兼容旧配置；现按模型存于 model_memory）
