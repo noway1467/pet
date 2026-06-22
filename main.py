@@ -1115,7 +1115,7 @@ class PetWindow(QWidget):
                              rect.height() * (0.10 + 0.04 * press)))
 
         x = rect.center().x() + rub * rect.width() * 0.050
-        y = rect.top() + rect.height() * 0.39 - (1.0 - settle) * rect.height() * 0.18 + press * rect.height() * 0.030
+        y = rect.top() + rect.height() * 0.43 - (1.0 - settle) * rect.height() * 0.18 + press * rect.height() * 0.030
         p.setOpacity(max(0.0, min(1.0, fade * 1.35)))
         p.translate(x, y)
         p.rotate(-2.0 + rub * 2.8)
