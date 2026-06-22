@@ -2,8 +2,8 @@
 """PyInstaller 打包脚本：生成 dist/DesktopPet/DesktopPet.exe（onedir，无控制台窗口）。
 
 构建：  .venv\\Scripts\\python.exe -m PyInstaller desktop_pet.spec --noconfirm
-版本：  v3.9.4
-说明：  live2d/ 模型文件夹通过 build_exe.bat 实体复制到 dist，不再使用软链接。
+版本：  v3.9.5
+说明：  build_exe.bat 只更新 dist/DesktopPet/_internal 和 DesktopPet.exe；模型目录由用户维护。
 """
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
@@ -36,7 +36,6 @@ hiddenimports += [
     "tts_player", "holiday_greetings",
     # 模型删除到回收站 - 使用 collect_all 已经包含，这里保留作为备份
     "send2trash", "send2trash.win", "send2trash.exceptions", "send2trash.util",
-    "send2trash.plat_win",
     # v3.7.2：TTS 改用 PySide6 自带的 QtTextToSpeech（不再依赖 pyttsx3/pywin32）
     "PySide6.QtTextToSpeech",
 ]

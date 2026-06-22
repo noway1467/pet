@@ -209,9 +209,7 @@ class ImagePet(QWidget):
         self.t += dt
         # 动作
         if self.action == "idle":
-            self._next_action -= dt
-            if self._next_action <= 0:
-                self._start(random.choice(self.IDLE_ACTIONS))
+            pass
         elif self.action == "grab":
             pass
         else:
@@ -225,10 +223,8 @@ class ImagePet(QWidget):
         self.update()
 
     def _idle(self):
-        t = self.t
-        s = math.sin(t * 2 * math.pi / 2.7)
-        return {"tx": 0.0, "ty": 2.5 * s, "rot": 2.0 * math.sin(t * 2 * math.pi / 3.6),
-                "sx": 1 - 0.016 * s, "sy": 1 + 0.022 * s, "wob": 1.2}
+        # 默认待机保持静态，避免图片宠物出现“液化/扭曲”的条带形变。
+        return {"tx": 0.0, "ty": 0.0, "rot": 0.0, "sx": 1.0, "sy": 1.0, "wob": 0.0}
 
     def _overlay(self):
         a, p = self.action, self.action_t
@@ -301,4 +297,3 @@ class ImagePet(QWidget):
                          pm, QRectF(0, y0, W, hh))
 
         p.end()
-
