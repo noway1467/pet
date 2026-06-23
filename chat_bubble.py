@@ -46,7 +46,6 @@ if sys.platform.startswith("win"):
         _USER32.GetClassNameW.restype = ctypes.c_int
         _HWND_TOPMOST = -1
         _HWND_NOTOPMOST = -2
-        _HWND_BOTTOM = 1
         _SWP_NOSIZE = 0x0001
         _SWP_NOMOVE = 0x0002
         _SWP_NOACTIVATE = 0x0010
@@ -215,12 +214,22 @@ def _best_non_topmost_anchor_hwnd(reference_widget, *ignored_widgets):
     return _external_foreground_hwnd(reference_widget, *ignored_widgets)
 
 
-def _external_foreground_is_fullscreen(reference_widget, *ignored_widgets):
-    """当前外部前台窗口是否全屏；只用于自动语录延迟，避免后台全屏窗口把闲聊憋住。"""
+def _external_foreground_blocks_auto_message(reference_widget, *ignored_widgets):
+    """非置顶自动语录只在桌面空闲时弹出，避免被其它窗口遮挡时闪一下。"""
     fg = _external_foreground_hwnd(reference_widget, *ignored_widgets)
     if not fg or _is_ignored_fullscreen_window(fg):
         return False
-    return _rect_covers_screen(_window_rect(fg), _screen_rect_for_widget(reference_widget))
+    try:
+        if not _USER32.IsWindowVisible(wintypes.HWND(fg)):
+            return False
+        if _USER32.IsIconic(wintypes.HWND(fg)):
+            return False
+        rect = _window_rect(fg)
+        if rect is None:
+            return False
+        return (rect.right - rect.left) > 8 and (rect.bottom - rect.top) > 8
+    except Exception:
+        return False
 
 
 def _restore_pair_behind(parent, bubble, anchor_hwnd):
@@ -236,12 +245,13 @@ def _restore_pair_behind(parent, bubble, anchor_hwnd):
     return ok
 
 
-def _drop_window_notopmost(widget):
-    """显式清掉 Win32 topmost 状态，并放到底部，避免 Qt flag 残留。"""
+def _drop_window_notopmost(widget, anchor_hwnd=None):
+    """显式清掉 Win32 topmost 状态，并按外部锚点降层，避免短暂浮到前台。"""
     if widget is None:
         return False
     ok = _restack_window(widget, False)
-    ok = _restack_window(widget, False, after=_HWND_BOTTOM) and ok
+    if anchor_hwnd:
+        ok = _restack_window(widget, False, after=anchor_hwnd) and ok
     return ok
 
 
@@ -855,9 +865,10 @@ class SmartChatBubble(QWidget):
 
     def force_not_topmost(self):
         parent = self.parentWidget() or self.parent()
-        _drop_window_notopmost(self)
+        anchor_hwnd = _best_non_topmost_anchor_hwnd(parent or self, self, parent)
+        _drop_window_notopmost(self, anchor_hwnd)
         if parent is not None:
-            _drop_window_notopmost(parent)
+            _drop_window_notopmost(parent, _window_hwnd(self) or anchor_hwnd)
 
     def sync_window_layer(self, anchor_hwnd=None):
         """把气泡原生窗口重新压回主窗口同一层级。"""
@@ -968,14 +979,17 @@ class SmartChatBubble(QWidget):
         self._hide_timer.start(duration)
         return True
 
-    def should_defer_auto_message_for_fullscreen(self):
+    def should_defer_auto_message(self):
         parent = self.parentWidget() or self.parent()
         try:
             if parent is not None and bool(getattr(parent, "cfg", {}).get("always_on_top", False)):
                 return False
         except Exception:
             pass
-        return _external_foreground_is_fullscreen(parent, self)
+        return _external_foreground_blocks_auto_message(parent, self)
+
+    def should_defer_auto_message_for_fullscreen(self):
+        return self.should_defer_auto_message()
 
     def _effective_max_width(self):
         """气泡换行用的最大宽度：不超过当前模型宽度的 2 倍。
@@ -1476,7 +1490,7 @@ class IntelligentChatManager:
         if (from_click or interaction) and self._is_speaking:
             return
         if from_auto_interval:
-            defer = getattr(self.bubble, "should_defer_auto_message_for_fullscreen", None)
+            defer = getattr(self.bubble, "should_defer_auto_message", None)
             if callable(defer):
                 try:
                     if defer():
@@ -1597,6 +1611,15 @@ class IntelligentChatManager:
 
     def _first_greeting(self):
         """首次问候。"""
+        defer = getattr(self.bubble, "should_defer_auto_message", None)
+        if callable(defer):
+            try:
+                if defer():
+                    self._last_play_time = datetime.now()
+                    return
+            except Exception:
+                pass
+
         # 优先检查节日问候
         if self._holiday_enabled and self._holiday_greeter:
             try:
