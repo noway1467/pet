@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QDialog, QLabel, QVBoxLayout, QHBoxLayout, QPushButton,
     QListWidget, QListWidgetItem, QLineEdit, QSlider, QCheckBox, QProgressBar,
     QGridLayout, QFrame, QWidgetAction, QButtonGroup, QRadioButton,
-    QComboBox,
+    QComboBox, QSpinBox,
 )
 
 import config
@@ -1317,8 +1317,9 @@ class PetWindow(QWidget):
             self.cfg.get("bubble_style", "cute"), "可爱")
         lo = int(self.cfg.get("chat_min_interval", 30))
         hi = int(self.cfg.get("chat_max_interval", 120))
+        interval = f"固定 {lo}s" if lo == hi else f"{lo}-{hi}s"
         tts = "开" if self.cfg.get("tts_enabled", False) else "关"
-        return mode, style, f"{lo}-{hi}s", tts
+        return mode, style, interval, tts
 
     def _open_chat_settings(self):
         dlg = QDialog(self)
@@ -1476,12 +1477,50 @@ class PetWindow(QWidget):
 
         freq_box, freq_lay = add_section(0, "频率")
         freq_group = QButtonGroup(dlg)
+        freq_group.setExclusive(True)
+        cur_lo = int(self.cfg.get("chat_min_interval", 30))
+        cur_hi = int(self.cfg.get("chat_max_interval", 120))
+        preset_pairs = {(lo, hi) for _label, lo, hi in CHAT_INTERVAL_PRESETS}
         for label, lo, hi in CHAT_INTERVAL_PRESETS:
             row = QRadioButton(label)
-            row.setChecked(self.cfg.get("chat_min_interval", 30) == lo and self.cfg.get("chat_max_interval", 120) == hi)
+            row.setChecked(cur_lo == lo and cur_hi == hi)
             row.toggled.connect(lambda checked, lo=lo, hi=hi: checked and (self._set_chat_interval(lo, hi), refresh_summary()))
             freq_group.addButton(row)
             freq_lay.addWidget(row)
+        custom_row = QRadioButton("自定义固定间隔")
+        custom_row.setChecked((cur_lo, cur_hi) not in preset_pairs)
+        freq_group.addButton(custom_row)
+        freq_lay.addWidget(custom_row)
+
+        custom_lay = QHBoxLayout()
+        custom_lay.setContentsMargins(22, 0, 0, 0)
+        custom_label = QLabel("每")
+        custom_label.setObjectName("muted")
+        custom_lay.addWidget(custom_label)
+        custom_spin = QSpinBox()
+        custom_spin.setRange(5, 3600)
+        custom_spin.setSuffix(" 秒")
+        custom_spin.setSingleStep(5)
+        custom_value = int(self.cfg.get("chat_custom_interval", 10))
+        if (cur_lo, cur_hi) not in preset_pairs:
+            custom_value = cur_lo if cur_lo == cur_hi else max(5, min(cur_lo, cur_hi))
+        custom_spin.setValue(max(5, min(3600, custom_value)))
+        custom_spin.setEnabled(custom_row.isChecked())
+
+        def apply_custom_interval():
+            val = int(custom_spin.value())
+            self._set_chat_interval(val, val, custom=val)
+            refresh_summary()
+
+        custom_row.toggled.connect(lambda checked: (
+            custom_spin.setEnabled(bool(checked)),
+            checked and apply_custom_interval()
+        ))
+        custom_spin.valueChanged.connect(
+            lambda _v: custom_row.isChecked() and apply_custom_interval())
+        custom_lay.addWidget(custom_spin)
+        custom_lay.addStretch(1)
+        freq_lay.addLayout(custom_lay)
         freq_lay.addStretch(1)
 
         voice_box, voice_lay = add_section(1, "语音")
@@ -3862,10 +3901,12 @@ class PetWindow(QWidget):
         else:
             self._chat_manager.say("节日问候已关闭")
 
-    def _set_chat_interval(self, lo, hi):
+    def _set_chat_interval(self, lo, hi, custom=None):
         """设置气泡语录自动播放间隔(秒)。"""
         self.cfg["chat_min_interval"] = int(lo)
         self.cfg["chat_max_interval"] = int(hi)
+        if custom is not None:
+            self.cfg["chat_custom_interval"] = int(custom)
         config.save(self.cfg)
         if self._chat_manager:
             self._chat_manager.set_intervals(lo, hi)

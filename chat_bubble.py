@@ -216,8 +216,11 @@ def _best_non_topmost_anchor_hwnd(reference_widget, *ignored_widgets):
 
 
 def _external_foreground_is_fullscreen(reference_widget, *ignored_widgets):
-    """当前屏幕是否存在外部全屏窗口；用于避免非置顶宠物打断全屏应用。"""
-    return bool(_external_fullscreen_hwnd(reference_widget, *ignored_widgets))
+    """当前外部前台窗口是否全屏；只用于自动语录延迟，避免后台全屏窗口把闲聊憋住。"""
+    fg = _external_foreground_hwnd(reference_widget, *ignored_widgets)
+    if not fg or _is_ignored_fullscreen_window(fg):
+        return False
+    return _rect_covers_screen(_window_rect(fg), _screen_rect_for_widget(reference_widget))
 
 
 def _restore_pair_behind(parent, bubble, anchor_hwnd):
@@ -1335,7 +1338,7 @@ class IntelligentChatManager:
     def set_intervals(self, min_s, max_s):
         """设置气泡语录自动播放的间隔(秒)。max 同时作为"必播一次"的上限。"""
         min_s = max(5, int(min_s))
-        max_s = max(min_s + 1, int(max_s))
+        max_s = max(min_s, int(max_s))
         self._min_interval = min_s
         self._max_interval = max_s
         self._play_cooldown = max_s
