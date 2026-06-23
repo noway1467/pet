@@ -3,7 +3,7 @@ setlocal
 cd /d %~dp0
 
 echo ============================================
-echo   DesktopPet v3.9.5 build script
+echo   DesktopPet v3.9.6 build script
 echo ============================================
 echo.
 echo Rules:
@@ -18,7 +18,8 @@ tasklist /FI "IMAGENAME eq DesktopPet.exe" 2>NUL | find /I /N "DesktopPet.exe">N
 if "%ERRORLEVEL%"=="0" (
     echo Found running DesktopPet.exe, stopping it...
     taskkill /F /IM DesktopPet.exe >nul 2>&1
-    timeout /t 2 >nul
+    REM timeout reads stdin and prints an error in redirected shells; ping gives a quiet 2s wait.
+    ping 127.0.0.1 -n 3 >nul
 )
 
 REM 2) Ensure build + runtime dependencies (so every feature gets bundled)

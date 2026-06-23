@@ -24,7 +24,7 @@ import config
 import system
 from pixel_pet import PixelPet, render_icon, CHARACTERS
 from image_pet import ImagePet
-from chat_bubble import ChatBubble, ChatManager, _restack_window
+from chat_bubble import ChatBubble, ChatManager, _best_non_topmost_anchor_hwnd, _restack_window
 from affinity import AffinitySystem
 
 PIXEL_CHARS = [(name, cls.label) for name, cls in CHARACTERS.items()]
@@ -167,7 +167,7 @@ def builtin_favorites():
 
 
 APP_NAME = "桌面宠物"
-APP_VERSION = "3.9.5"
+APP_VERSION = "3.9.6"
 ACCENT = "#5BB8F5"
 
 # ──── 贴边自动隐藏参数 ────
@@ -4301,15 +4301,22 @@ class PetWindow(QWidget):
     def _sync_window_layers(self):
         self._layer_sync_pending = False
         on_top = bool(self.cfg.get("always_on_top", False))
+        anchor_hwnd = None
         try:
             if on_top:
                 _restack_window(self, True)
+            else:
+                anchor_hwnd = _best_non_topmost_anchor_hwnd(
+                    self, getattr(self, "_chat_bubble", None)
+                )
+                if anchor_hwnd:
+                    _restack_window(self, False, after=anchor_hwnd)
         except Exception:
             pass
         try:
             self._chat_bubble.set_always_on_top(on_top)
             if self._chat_bubble.isVisible():
-                self._chat_bubble.sync_window_layer()
+                self._chat_bubble.sync_window_layer(anchor_hwnd)
         except Exception:
             pass
 
