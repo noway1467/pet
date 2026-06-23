@@ -4373,9 +4373,13 @@ class PetWindow(QWidget):
             if on_top:
                 _restack_window(self, True)
             else:
-                _restack_window(self, False)
-                self.lower()
-                _restack_window(self, False, after=1)  # HWND_BOTTOM：立刻落到普通窗口后面
+                anchor_hwnd = _best_non_topmost_anchor_hwnd(
+                    self, getattr(self, "_chat_bubble", None)
+                )
+                if anchor_hwnd:
+                    _restack_window(self, False, after=anchor_hwnd)
+                else:
+                    _restack_window(self, False)
         except Exception:
             pass
 
