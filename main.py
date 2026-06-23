@@ -654,7 +654,8 @@ class PetWindow(QWidget):
                 self.renderer = Live2DPet(self.cfg["live2d_model"],
                                           size,
                                           v["zoom"], v["xoff"], v["yoff"], self,
-                                          ratio=v["ratio"])
+                                          ratio=v["ratio"],
+                                          canvas_scale=v["canvas_scale"])
                 self.renderer.on_error = self._on_live2d_render_error
                 self.renderer.on_resized = self._fit_window_to_renderer
                 self.renderer.on_voice_with_text = self._on_voice_with_text
@@ -761,7 +762,20 @@ class PetWindow(QWidget):
                 fn(force=True)
         except Exception:
             pass
+        self._refresh_live2d_input_region()
         self._enforce_workarea(save=True)
+
+    def _refresh_live2d_input_region(self):
+        """重测 Live2D 可交互区域，避免动作/拖动后的旧包围盒把上半身判成透明。"""
+        if self.cfg.get("character") == "live2d":
+            try:
+                refresh = getattr(self.renderer, "refresh_content_box", None)
+                if callable(refresh):
+                    refresh()
+            except Exception:
+                pass
+        self._input_mask_rect_cache = None
+        self._sync_input_mask()
 
     def _sync_petting_overlay(self):
         """切换模型期间覆盖层会短暂置空，事件回调必须容忍这个过渡态。"""
@@ -855,6 +869,9 @@ class PetWindow(QWidget):
                     self._drag_applied = None
                     self._set_renderer_mask_updates(True)
                     self._set_renderer_render_active(True)
+                    self._input_mask_rect_cache = None
+                    QTimer.singleShot(0, self._sync_input_mask)
+                    QTimer.singleShot(180, self._refresh_live2d_input_region)
                 moved = self._moved
 
                 # 检测是否点击头部（未拖动时）
@@ -875,7 +892,7 @@ class PetWindow(QWidget):
                         and self.cfg.get("click_action_enabled", True)
                     )
                     if moved:
-                        self.renderer.react("drop")
+                        self._play_drag_release_reaction()
                     elif click_action_enabled:
                         self._play_configured_click_action()
                     if self.cfg.get("nurture_mode", False):
@@ -969,6 +986,24 @@ class PetWindow(QWidget):
     def _in_head_region(self, click_x, click_y):
         """窗口内坐标 (click_x, click_y) 是否落在"头部摸头范围"：
         模型顶部偏上的较小区域，尽量只覆盖头顶，不吃到额头以下。"""
+        if self.cfg.get("character") == "live2d":
+            try:
+                hit_test = getattr(self.renderer, "hit_test", None)
+                if callable(hit_test) and hit_test("head", click_x, click_y):
+                    return True
+            except Exception:
+                pass
+            content_left = 0
+            content_top = 0
+            content_w = max(1, self.width())
+            content_h = max(1, self.height())
+            head_h = max(42, int(content_h * 0.36))
+            head_bottom = content_top + head_h
+            side_margin = int(content_w * 0.22)
+            head_left = content_left + side_margin
+            head_right = content_left + content_w - side_margin
+            return (content_top <= click_y <= head_bottom
+                    and head_left <= click_x <= head_right)
         try:
             l_in, top_inset, r_in, _ = self._content_inset()
         except Exception:
@@ -1081,15 +1116,22 @@ class PetWindow(QWidget):
 
     def _petting_overlay_rect(self):
         """手势覆盖动画的手掌落点区域：比摸头热区略大一点，但仍只在头顶。"""
-        try:
-            l_in, top_inset, r_in, _ = self._content_inset()
-        except Exception:
-            l_in = r_in = 0
-            top_inset = 0
-        content_left = int(l_in)
-        content_top = int(top_inset)
-        content_w = max(1, self.width() - int(l_in) - int(r_in))
-        content_h = max(1, self.height() - content_top)
+        if self.cfg.get("character") == "live2d":
+            content_left = 0
+            content_top = 0
+            content_w = max(1, self.width())
+            content_h = max(1, self.height())
+            top_inset = int(content_h * 0.24)
+        else:
+            try:
+                l_in, top_inset, r_in, _ = self._content_inset()
+            except Exception:
+                l_in = r_in = 0
+                top_inset = 0
+            content_left = int(l_in)
+            content_top = int(top_inset)
+            content_w = max(1, self.width() - int(l_in) - int(r_in))
+            content_h = max(1, self.height() - content_top)
         w = max(76, int(content_w * 0.36))
         h = max(66, int(content_h * 0.28))
         x = int(content_left + (content_w - w) / 2)
@@ -2073,6 +2115,7 @@ class PetWindow(QWidget):
                 "xoff": float(v.get("xoff", 0.0)),
                 "yoff": float(v.get("yoff", 0.0)),
                 "ratio": (float(r) if r else None),
+                "canvas_scale": max(1.0, min(2.6, float(v.get("canvas_scale", 1.0) or 1.0))),
                 "size": (int(v["size"]) if v.get("size") else None),
                 "pos": ([int(pos[0]), int(pos[1])]
                         if isinstance(pos, (list, tuple)) and len(pos) == 2 else None)}
@@ -2081,20 +2124,21 @@ class PetWindow(QWidget):
         """新模型首次出现时的默认构图：各模型独立尺寸，构图归零，画布比例自动。"""
         model_mem = self._get_model_memory(f"live2d:{_canon_path(path)}")
         size = model_mem.get("size") or size_hint or DEFAULT_LIVE2D_SIZE
-        return {"zoom": 1.0, "xoff": 0.0, "yoff": 0.0, "ratio": None,
+        return {"zoom": 1.0, "xoff": 0.0, "yoff": 0.0, "ratio": None, "canvas_scale": 1.0,
                 "size": int(size), "pos": None}
 
     def _resolve_live2d_state(self, path, size_hint=None):
         """合并模型记忆和构图配置，得到当前应使用的完整 Live2D 状态。"""
         v = self._l2d_view_of(path)
         base = self._default_live2d_view(path, size_hint=size_hint)
-        for key in ("zoom", "xoff", "yoff", "ratio", "size", "pos"):
+        for key in ("zoom", "xoff", "yoff", "ratio", "canvas_scale", "size", "pos"):
             if v.get(key) is not None:
                 base[key] = v[key]
         return base
 
-    def _l2d_save_view(self, path, zoom, xoff, yoff, ratio, size=None, pos=None):
-        """按模型保存构图(zoom/xoff/yoff/ratio)；size/pos 仅在显式传入时更新、否则保留原值。"""
+    def _l2d_save_view(self, path, zoom, xoff, yoff, ratio,
+                       size=None, pos=None, canvas_scale=None):
+        """按模型保存构图；size/pos/canvas_scale 仅在显式传入时更新、否则保留原值。"""
         if not path:
             return
         views = self.cfg.setdefault("live2d_views", {})
@@ -2104,6 +2148,8 @@ class PetWindow(QWidget):
                       "xoff": round(float(xoff), 3),
                       "yoff": round(float(yoff), 3),
                       "ratio": (round(float(ratio), 3) if ratio else None)})
+        if canvas_scale is not None:
+            entry["canvas_scale"] = round(max(1.0, min(2.6, float(canvas_scale or 1.0))), 3)
         if size is not None:
             entry["size"] = int(size)
         if pos is not None:
@@ -2117,16 +2163,19 @@ class PetWindow(QWidget):
         v["zoom"] = max(0.2, min(5.0, v["zoom"] * zoom_mul))
         v["xoff"] = max(-2.0, min(2.0, v["xoff"] + dxoff))
         v["yoff"] = max(-2.0, min(2.0, v["yoff"] + dyoff))
-        self._l2d_save_view(path, v["zoom"], v["xoff"], v["yoff"], v["ratio"])
+        self._l2d_save_view(path, v["zoom"], v["xoff"], v["yoff"], v["ratio"],
+                            canvas_scale=v["canvas_scale"])
         if hasattr(self.renderer, "set_view"):
             self.renderer.set_view(v["zoom"], v["xoff"], v["yoff"])
 
     def _l2d_view_reset(self):
         path = self.cfg.get("live2d_model")
         v = self._l2d_view_of(path)
-        self._l2d_save_view(path, 1.0, 0.0, 0.0, v["ratio"])
+        self._l2d_save_view(path, 1.0, 0.0, 0.0, v["ratio"], canvas_scale=1.0)
         if hasattr(self.renderer, "set_view"):
             self.renderer.set_view(1.0, 0.0, 0.0)
+        if hasattr(self.renderer, "set_canvas_scale"):
+            self.renderer.set_canvas_scale(1.0)
 
     def _l2d_fit_region(self, top, bottom):
         """对当前 Live2D 模型贴合指定竖直区间（全身/半身/上半身/头肩），并按模型保存。"""
@@ -2137,14 +2186,17 @@ class PetWindow(QWidget):
             return
         if r.fit_to_content(top, bottom):
             z, x, y = r.get_view()
-            self._l2d_save_view(self.cfg.get("live2d_model"), z, x, y, r.height_ratio())
+            canvas_scale = r.canvas_scale() if hasattr(r, "canvas_scale") else None
+            self._l2d_save_view(self.cfg.get("live2d_model"), z, x, y, r.height_ratio(),
+                                canvas_scale=canvas_scale)
             self._fit_window_to_renderer()
 
     def _l2d_set_ratio(self, ratio):
         """调整画布高度：ratio=None 表示按模型画布自动；否则手动比例（按模型记忆）。"""
         path = self.cfg.get("live2d_model")
         v = self._l2d_view_of(path)
-        self._l2d_save_view(path, v["zoom"], v["xoff"], v["yoff"], ratio)
+        self._l2d_save_view(path, v["zoom"], v["xoff"], v["yoff"], ratio,
+                            canvas_scale=v["canvas_scale"])
         if self.cfg.get("character") != "live2d":
             return
         if ratio is None:
@@ -2543,10 +2595,31 @@ class PetWindow(QWidget):
             return False
         if self.cfg.get("character") == "live2d":
             if hasattr(self.renderer, "react"):
-                self.renderer.react("click")
+                try:
+                    self.renderer.react(
+                        "click",
+                        with_subtitle=self.cfg.get("click_quote_enabled", True),
+                    )
+                except TypeError:
+                    self.renderer.react("click")
             return True
         self._play_action(self.cfg.get("click_action", "hop"))
         return True
+
+    def _play_drag_release_reaction(self):
+        """拖动松手只播放“放下/拖拽”反应，不借点击身体字幕通道。"""
+        if not hasattr(self.renderer, "react"):
+            return
+        if self.cfg.get("character") == "live2d":
+            try:
+                self.renderer.react(
+                    "drop",
+                    with_subtitle=self.cfg.get("click_quote_enabled", True),
+                )
+                return
+            except TypeError:
+                pass
+        self.renderer.react("drop")
 
     # --- 通用"窗口动作"：移动整窗实现 起跳/点头/跳舞…，任何渲染器都能用 ---
     def _play_window_action(self, name):
@@ -2741,11 +2814,31 @@ class PetWindow(QWidget):
         top = max(0, int(round(t_in)) - pad)
         right = max(0, int(round(r_in)) - pad)
         bottom = max(0, int(round(b_in)) - pad)
+        if self.cfg.get("character") == "live2d":
+            # Live2D 的包围盒来自实时 alpha 测量，个别动作/首帧可能只测到下半身。
+            # 命中区异常过窄时向四周放宽，优先把上半身纳回可拖拽范围。
+            min_w = max(44, int(self.width() * 0.30))
+            min_h = max(80, int(self.height() * 0.55))
+            cur_w = self.width() - left - right
+            cur_h = self.height() - top - bottom
+            if cur_w < min_w:
+                grow = min_w - cur_w
+                left = max(0, left - grow // 2)
+                right = max(0, right - (grow - grow // 2))
+            if cur_h < min_h:
+                grow = min_h - cur_h
+                grow_top = int(grow * 0.72)
+                top = max(0, top - grow_top)
+                bottom = max(0, bottom - (grow - grow_top))
         w = max(1, self.width() - left - right)
         h = max(1, self.height() - top - bottom)
         return QRect(left, top, w, h)
 
     def _point_hits_visible_content(self, x, y):
+        if self.cfg.get("character") == "live2d":
+            # Live2D 的可见范围会随动作/离屏帧变化。输入命中不能再依赖实时 alpha
+            # 包围盒，否则个别模型会把上半身误判成透明，导致不能拖动/摸头。
+            return self.rect().contains(int(x), int(y))
         rect = self._input_mask_rect_cache
         if rect is None:
             rect = self._visible_content_rect()
@@ -2761,12 +2854,30 @@ class PetWindow(QWidget):
                 return
             rect = self._visible_content_rect()
             self._input_mask_rect_cache = QRect(rect)
+            if self.cfg.get("character") == "live2d":
+                # Windows 的 QWidget.setMask 会同时裁剪输入和显示区域。
+                # Live2D 动作会伸出静止姿态的内容矩形，继续套 mask 会把手臂等动作画面切掉；
+                # 输入穿透改在 nativeEvent 的 WM_NCHITTEST 里做，只影响鼠标命中，不裁视觉。
+                self.clearMask()
+                return
             if rect.width() >= self.width() - 2 and rect.height() >= self.height() - 2:
                 self.clearMask()
             else:
                 self.setMask(QRegion(rect))
         except Exception:
             pass
+
+    def _hit_test_passthrough_at(self, global_pos):
+        """Windows 输入穿透：Live2D 先禁用实时透明区穿透，保证整只模型可交互。"""
+        if not sys.platform.startswith("win"):
+            return False
+        if self.cfg.get("click_through", False):
+            return False
+        if self.cfg.get("character") != "live2d":
+            return False
+        # 先保证 Live2D 整个窗口都可交互。之前按 alpha 包围盒返回
+        # HTTRANSPARENT，Rem 等模型会出现上半身无法拖动、摸头事件根本进不来。
+        return False
 
     def _set_renderer_mask_updates(self, enabled):
         fn = getattr(self.renderer, "set_mask_updates_enabled", None)
@@ -2988,6 +3099,12 @@ class PetWindow(QWidget):
                 if msg.message == 0x0312 and msg.wParam == self._hotkey_id:  # WM_HOTKEY
                     self._toggle_visible()
                     return True, 0
+                if msg.message == 0x0084:  # WM_NCHITTEST
+                    import ctypes
+                    x = ctypes.c_short(int(msg.lParam) & 0xFFFF).value
+                    y = ctypes.c_short((int(msg.lParam) >> 16) & 0xFFFF).value
+                    if self._hit_test_passthrough_at(QPoint(x, y)):
+                        return True, -1  # HTTRANSPARENT：把鼠标命中交给下面的窗口
         except Exception:
             pass
         return False, 0
@@ -3829,7 +3946,8 @@ class PetWindow(QWidget):
             self.cfg["live2d_size"] = int(dlg.size_px)
             # 选择器里调好的构图 + 显示尺寸，按这个模型一并记住
             self._l2d_save_view(dlg.selected_path, dlg.zoom, dlg.xoff, dlg.yoff,
-                                dlg.ratio, size=int(dlg.size_px))
+                                dlg.ratio, size=int(dlg.size_px),
+                                canvas_scale=dlg.canvas_scale)
             config.save(self.cfg)
             self._switch_character_fast("live2d", dlg.selected_path)
             self._refresh_tray()
@@ -4182,12 +4300,14 @@ class PetWindow(QWidget):
 
     def _sync_window_layers(self):
         self._layer_sync_pending = False
+        on_top = bool(self.cfg.get("always_on_top", False))
         try:
-            _restack_window(self, bool(self.cfg.get("always_on_top", False)))
+            if on_top:
+                _restack_window(self, True)
         except Exception:
             pass
         try:
-            self._chat_bubble.set_always_on_top(bool(self.cfg.get("always_on_top", False)))
+            self._chat_bubble.set_always_on_top(on_top)
             if self._chat_bubble.isVisible():
                 self._chat_bubble.sync_window_layer()
         except Exception:
@@ -4431,7 +4551,8 @@ class Live2DPicker(QDialog):
         self._feature_provider = feature_provider
         self._zoom, self._xoff, self._yoff = 1.0, 0.0, 0.0
         self._ratio = None                         # None=按模型画布自动
-        self.zoom, self.xoff, self.yoff, self.ratio = 1.0, 0.0, 0.0, None
+        self._canvas_scale = 1.0                   # 额外横向画布倍率，框选超宽动作时使用
+        self.zoom, self.xoff, self.yoff, self.ratio, self.canvas_scale = 1.0, 0.0, 0.0, None, 1.0
         self.size_px = int(size_px)                # 在桌面上的显示尺寸（点"应用"后生效）
         self.selected_path = None
         self._sel_path = None
@@ -4621,6 +4742,7 @@ class Live2DPicker(QDialog):
             "xoff": float(v.get("xoff", 0.0)),
             "yoff": float(v.get("yoff", 0.0)),
             "ratio": (float(r) if r else None),
+            "canvas_scale": max(1.0, min(2.6, float(v.get("canvas_scale", 1.0) or 1.0))),
             "size": (int(v["size"]) if v.get("size") else None),
             "pos": ([int(pos[0]), int(pos[1])]
                     if isinstance(pos, (list, tuple)) and len(pos) == 2 else None),
@@ -4633,6 +4755,7 @@ class Live2DPicker(QDialog):
         self._xoff = float(v.get("xoff", 0.0))
         self._yoff = float(v.get("yoff", 0.0))
         self._ratio = v.get("ratio", None)
+        self._canvas_scale = float(v.get("canvas_scale", 1.0) or 1.0)
         self.size_px = int(v.get("size") or DEFAULT_LIVE2D_SIZE)
         self.size_slider.blockSignals(True)
         self.size_slider.setValue(self._size_to_slider(self.size_px))
@@ -4938,6 +5061,8 @@ class Live2DPicker(QDialog):
             if self._preview.fit_to_content(top, bottom):
                 self._zoom, self._xoff, self._yoff = self._preview.get_view()
                 self._ratio = self._preview.height_ratio()
+                if hasattr(self._preview, "canvas_scale"):
+                    self._canvas_scale = self._preview.canvas_scale()
         except Exception:
             pass
         self._sync_sliders()
@@ -4950,7 +5075,8 @@ class Live2DPicker(QDialog):
             # 使用较小的预览尺寸，减少内存占用
             preview_size = 220
             pv = Live2DPet(path, preview_size, self._zoom, self._xoff, self._yoff,
-                           self.preview_view, ratio=self._ratio, preview_mode=True)
+                           self.preview_view, ratio=self._ratio, preview_mode=True,
+                           canvas_scale=self._canvas_scale)
             pv.set_follow(False)
             pv.on_error = lambda *a, _pv=pv: self._preview_failed(_pv)
             pv.on_resized = lambda *a, _pv=pv: self._fit_preview(_pv)
@@ -5059,6 +5185,7 @@ class Live2DPicker(QDialog):
     def _reset(self):
         # 复位：构图归位 + 画布回到自动
         self._zoom, self._xoff, self._yoff, self._ratio = 1.0, 0.0, 0.0, None
+        self._canvas_scale = 1.0
         if self._sel_path:
             self._clear_preview()
             self._queue_preview_spawn(self._sel_path)
@@ -5109,13 +5236,18 @@ class Live2DPicker(QDialog):
         # 缩放：让选区铺满画布（留 target 余量，防止动画时出界）
         f = max(0.25, min(4.0, target / max(cw, ch)))
         self._zoom = max(0.2, min(5.0, self._zoom * f))
-        # 画框比例：按选区高宽比调整
+        # 画框比例：按选区高宽比调整。若选区比 ratio 下限还宽，就额外扩大透明画布宽度，
+        # 否则仅靠降低高度比例会到达下限，横向动作仍会被 FBO 边界裁掉。
         base_ratio = self._ratio if self._ratio else (
             self._preview.height_ratio() if self._preview else 1.4)
-        self._ratio = max(0.55, min(2.8, base_ratio * (ch / cw)))
+        desired_ratio = max(0.01, base_ratio * (ch / cw))
+        self._ratio = max(0.55, min(2.8, desired_ratio))
+        self._canvas_scale = max(1.0, min(2.6, 0.55 / desired_ratio if desired_ratio < 0.55 else 1.0))
         self._preview.set_view(self._zoom, self._xoff, self._yoff)
         if hasattr(self._preview, "set_height_ratio"):
             self._preview.set_height_ratio(self._ratio)
+        if hasattr(self._preview, "set_canvas_scale"):
+            self._preview.set_canvas_scale(self._canvas_scale)
             QTimer.singleShot(0, self._fit_preview)
         self._sync_sliders()
 
@@ -5124,6 +5256,7 @@ class Live2DPicker(QDialog):
             self.selected_path = self._sel_path
             self.zoom, self.xoff, self.yoff = self._zoom, self._xoff, self._yoff
             self.ratio = self._ratio
+            self.canvas_scale = self._canvas_scale
             self.accept()
 
     def done(self, r):

@@ -79,6 +79,8 @@ _inited = set()
 L2D_RATIO = 1.4
 # 画布高/宽比例允许范围（贴合内容时可能很宽/很方，所以下限给得比较低）
 RATIO_MIN, RATIO_MAX = 0.55, 2.8
+# 额外横向画布倍率：用于特别宽的动作/框选范围，只加透明画布，不改变模型本体大小。
+CANVAS_SCALE_MIN, CANVAS_SCALE_MAX = 1.0, 2.6
 # Live2D 透明遮罩不要紧贴模型边缘，否则模型呼吸/物理轻动时 Windows 合成层会反复裁到边缘，
 # 看起来像背后黑影在抽搐。给一圈余量，并降低刷新频率，让黑底保持透明但轮廓更稳定。
 MASK_PADDING_MIN, MASK_PADDING_MAX = 8, 18
@@ -246,7 +248,7 @@ class _Live2DGL(QOpenGLWidget):
     "把 GL 表面合成进窗口"这一步。所以改由普通 QWidget 用 QPainter 画它的 framebuffer，
     走普通控件逐像素 alpha 合成，桌面上就只剩宠物本体、没有任何黑框。"""
     def __init__(self, model_path, size=300, zoom=1.0, xoff=0.0, yoff=0.0,
-                 parent=None, ratio=None, preview_mode=False):
+                 parent=None, ratio=None, preview_mode=False, canvas_scale=1.0):
         super().__init__(parent)
         if not LIVE2D_AVAILABLE:
             raise RuntimeError(
@@ -269,8 +271,10 @@ class _Live2DGL(QOpenGLWidget):
         self._ratio = L2D_RATIO if ratio is None else max(RATIO_MIN, min(RATIO_MAX, float(ratio)))
         self._h = round(self._w * self._ratio)
         self._canvas_margin = 0
+        self._base_canvas_w = self._w
         self._canvas_w = self._w
         self._canvas_h = self._h
+        self._canvas_scale = max(CANVAS_SCALE_MIN, min(CANVAS_SCALE_MAX, float(canvas_scale or 1.0)))
         self._zoom = max(0.2, min(5.0, float(zoom)))    # 画面缩放（构图）
         self._xoff = max(-2.0, min(2.0, float(xoff)))   # 水平偏移（+右 -左）
         self._yoff = max(-2.0, min(2.0, float(yoff)))   # 竖直偏移（+上 -下）
@@ -455,7 +459,8 @@ class _Live2DGL(QOpenGLWidget):
             MASK_PADDING_MIN,
             min(dynamic_cap,
                 max(CANVAS_MARGIN_MIN, int(round(self._w * margin_ratio)))))
-        self._canvas_w = int(self._w + self._canvas_margin * 2)
+        self._base_canvas_w = int(self._w + self._canvas_margin * 2)
+        self._canvas_w = int(round(self._w * self._canvas_scale)) + self._canvas_margin * 2
         self._canvas_h = int(self._h + self._canvas_margin * 2)
 
     def natural_size(self):
@@ -495,6 +500,20 @@ class _Live2DGL(QOpenGLWidget):
 
     def height_ratio(self):
         return self._ratio
+
+    def set_canvas_scale(self, scale):
+        self._canvas_scale = max(CANVAS_SCALE_MIN, min(CANVAS_SCALE_MAX, float(scale or 1.0)))
+        self._update_canvas_size()
+        self.setFixedSize(self._canvas_w, self._canvas_h)
+        if self.model:
+            self.model.Resize(self._canvas_w, self._canvas_h)
+            self._apply_view()
+        self._content_box = None
+        if callable(self.on_resized):
+            QTimer.singleShot(0, self.on_resized)
+
+    def canvas_scale(self):
+        return self._canvas_scale
 
     def is_auto_ratio(self):
         return self._auto_ratio
@@ -596,7 +615,7 @@ class _Live2DGL(QOpenGLWidget):
         """归一化视线方向（dx 右正，dy 上正），让模型头/眼看向鼠标。"""
         self._look = (max(-1.0, min(1.0, dx)), max(-1.0, min(1.0, dy)))
 
-    def react(self, event):
+    def react(self, event, with_voice=True, with_subtitle=True):
         if not self.model:
             return None
         # 摸头：只走主程序的手势覆盖动画，不再驱动模型本体动作。
@@ -609,8 +628,11 @@ class _Live2DGL(QOpenGLWidget):
             self._start_motion(priority=3)
             return None
         if event in ("click", "drop", "land"):
-            # 真正的点击/拖动松手/落地：优先播放"戳身体"动作组（带配音），没有就普通高优先级随机动作
-            played, _ = self.play_interaction("body")
+            # 拖动松手是“放下宠物”，不要复用点击身体的 tap_body 语义；否则会冒出点击字幕。
+            # 若模型没有 drag/shake 组，再按普通动作兜底，字幕/语音由调用方决定是否允许。
+            kind = "shake" if event == "drop" else "body"
+            played, _ = self.play_interaction(
+                kind, with_voice=with_voice, with_subtitle=with_subtitle)
             if not played:
                 self._start_motion(priority=3)     # 用户互动用高优先级，明显打断待机
         if event in ("click", "land"):
@@ -709,7 +731,7 @@ class _Live2DGL(QOpenGLWidget):
     def _apply_view(self):
         if not self.model:
             return
-        scale = self._zoom * min(self._w / max(1, self._canvas_w),
+        scale = self._zoom * min(self._w / max(1, self._base_canvas_w),
                                  self._h / max(1, self._canvas_h))
         for fn, arg in (("SetScale", (scale,)), ("SetOffset", (self._xoff, self._yoff))):
             try:
@@ -960,11 +982,11 @@ class _Live2DGL(QOpenGLWidget):
             iters = 3 if self._preview_mode else 6
         # 调用前构图快照：测量失败时回滚
         snap = (self._zoom, self._xoff, self._yoff, self._ratio,
-                self._auto_ratio, self._w, self._h)
+                self._auto_ratio, self._w, self._h, self._canvas_scale)
 
         def _restore_snapshot():
             (self._zoom, self._xoff, self._yoff, self._ratio,
-             self._auto_ratio, self._w, self._h) = snap
+             self._auto_ratio, self._w, self._h, self._canvas_scale) = snap
             self._update_canvas_size()
             self.setFixedSize(self._canvas_w, self._canvas_h)
             if self.model:
@@ -1009,8 +1031,14 @@ class _Live2DGL(QOpenGLWidget):
             # 2) 缩放：让较大的一维填到 target（取大维，避免裁掉内容）
             f = max(0.7, min(1.6, target / max(cw, ch)))
             self._zoom = max(0.2, min(5.0, self._zoom * f))
-            # 3) 画布比例贴合内容（窗口高/宽 = 目标区间像素高/宽）
-            self._ratio = max(RATIO_MIN, min(RATIO_MAX, self._ratio * (ch / cw)))
+            # 3) 画布比例贴合内容（窗口高/宽 = 目标区间像素高/宽）。
+            # 选区特别宽时，ratio 会碰到下限；剩余宽度转成横向透明画布，避免动作伸手被裁。
+            desired_ratio = max(0.01, self._ratio * (ch / cw))
+            self._ratio = max(RATIO_MIN, min(RATIO_MAX, desired_ratio))
+            self._canvas_scale = max(
+                CANVAS_SCALE_MIN,
+                min(CANVAS_SCALE_MAX, RATIO_MIN / desired_ratio if desired_ratio < RATIO_MIN else 1.0),
+            )
             self._auto_ratio = False
             self._apply_view()
             self._resize_to_ratio(notify=False)
@@ -1076,7 +1104,7 @@ class _Live2DGL(QOpenGLWidget):
             groups.append((g, lst))
         return groups
 
-    def play_motion(self, group, index=None):
+    def play_motion(self, group, index=None, with_voice=True, with_subtitle=True):
         """播放某条动作并配上语音；返回已显示的语音字幕文本（无字幕则 None）。"""
         if not self.model:
             return None
@@ -1094,10 +1122,10 @@ class _Live2DGL(QOpenGLWidget):
         # 播放配套语音
         text_shown = None
         sound_path = self._sound_for(group, int(index))
-        if sound_path:
+        if sound_path and with_voice:
             self._voice.play(sound_path)
             # 提取语音对应的字幕文字，并把语音时长一并带出，让气泡停留与语音播放对齐
-            if callable(self.on_voice_with_text):
+            if with_subtitle and callable(self.on_voice_with_text):
                 try:
                     text = self._extract_voice_text(sound_path, group, index)
                     if text:
@@ -1242,7 +1270,7 @@ class _Live2DGL(QOpenGLWidget):
                  ["head", "face"]),
         "body": (["tap_body", "tapbody", "tap", "body"],
                  ["body", "tap", "touch"]),
-        "shake": (["shake", "drag", "tap_body"],
+        "shake": (["shake", "drag"],
                   ["shake", "drag"]),
     }
 
@@ -1262,16 +1290,18 @@ class _Live2DGL(QOpenGLWidget):
                     return g
         return None
 
-    def play_group_random(self, group):
+    def play_group_random(self, group, with_voice=True, with_subtitle=True):
         """从某动作组里随机挑一条播放，并配上它的语音；返回语音字幕文本（无则 None）。
         自己选 index（而非交给库随机）以便语音与动作严格对应。"""
         items = self._ensure_motion_data().get(group)
         if items:
-            return self.play_motion(group, random.choice(items)["index"])
+            return self.play_motion(
+                group, random.choice(items)["index"],
+                with_voice=with_voice, with_subtitle=with_subtitle)
         self._start_motion(group if group else "", priority=3)
         return None
 
-    def play_interaction(self, kind):
+    def play_interaction(self, kind, with_voice=True, with_subtitle=True):
         """播放某类互动（head/body/shake）对应的模型动作组（含配音）。
         返回 (played, subtitle_text)：played 表示模型有对应动作组并已播放；
         subtitle_text 为已显示的语音字幕（无语音/无翻译则 None）。"""
@@ -1279,7 +1309,8 @@ class _Live2DGL(QOpenGLWidget):
             return (False, None)
         group = self._match_group(kind)
         if group:
-            return (True, self.play_group_random(group))
+            return (True, self.play_group_random(
+                group, with_voice=with_voice, with_subtitle=with_subtitle))
         return (False, None)
 
     def play_voice_random(self):
@@ -1597,7 +1628,8 @@ class _Live2DGL(QOpenGLWidget):
         except Exception:
             pass
 
-    def reload_model(self, model_path, size=None, zoom=None, xoff=None, yoff=None, ratio=None):
+    def reload_model(self, model_path, size=None, zoom=None, xoff=None, yoff=None,
+                     ratio=None, canvas_scale=None):
         """在不重建 QWidget 的情况下热切换 Live2D 模型。"""
         self.model_path = model_path
         self.version = detect_version(model_path)
@@ -1613,6 +1645,8 @@ class _Live2DGL(QOpenGLWidget):
         if ratio is not None:
             self._auto_ratio = False
             self._ratio = max(RATIO_MIN, min(RATIO_MAX, float(ratio)))
+        if canvas_scale is not None:
+            self._canvas_scale = max(CANVAS_SCALE_MIN, min(CANVAS_SCALE_MAX, float(canvas_scale or 1.0)))
         self._h = round(self._w * self._ratio)
         self._update_canvas_size()
         self.setFixedSize(self._canvas_w, self._canvas_h)
@@ -1770,7 +1804,7 @@ class Live2DPet(QWidget):
     其余未显式定义的方法/属性通过 __getattr__ 透明转发到离屏渲染器。"""
 
     def __init__(self, model_path, size=300, zoom=1.0, xoff=0.0, yoff=0.0,
-                 parent=None, ratio=None, preview_mode=False):
+                 parent=None, ratio=None, preview_mode=False, canvas_scale=1.0):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_NoSystemBackground, True)
@@ -1785,7 +1819,7 @@ class Live2DPet(QWidget):
         self.on_voice_with_text = None
         # 离屏 GL 渲染器：parent=None、永不 show()，靠 grabFramebuffer 驱动
         self._gl = _Live2DGL(model_path, size, zoom, xoff, yoff,
-                             None, ratio, preview_mode)
+                             None, ratio, preview_mode, canvas_scale)
         # 离屏控件 update() 不会触发 paintGL，所以停掉它自带的刷新/遮罩定时器，
         # 改由本控件按帧 grabFramebuffer 主动驱动渲染。
         try:
@@ -1916,6 +1950,15 @@ class Live2DPet(QWidget):
         self._pending_resize_guard = 2
         self._gl.set_height_ratio(r)
         self._sync_size_from_gl()
+
+    def set_canvas_scale(self, scale):
+        self._frame = None
+        self._pending_resize_guard = 2
+        self._gl.set_canvas_scale(scale)
+        self._sync_size_from_gl()
+
+    def canvas_scale(self):
+        return self._gl.canvas_scale()
 
     def fit_to_content(self, *a, **k):
         self._frame = None

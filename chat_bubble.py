@@ -33,8 +33,11 @@ if sys.platform.startswith("win"):
         _USER32.SetWindowPos.restype = wintypes.BOOL
         _USER32.GetForegroundWindow.argtypes = []
         _USER32.GetForegroundWindow.restype = wintypes.HWND
+        _USER32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        _USER32.GetWindowRect.restype = wintypes.BOOL
         _HWND_TOPMOST = -1
         _HWND_NOTOPMOST = -2
+        _HWND_BOTTOM = 1
         _SWP_NOSIZE = 0x0001
         _SWP_NOMOVE = 0x0002
         _SWP_NOACTIVATE = 0x0010
@@ -64,6 +67,81 @@ def _foreground_hwnd():
     except Exception:
         return None
     return hwnd or None
+
+
+def _external_foreground_hwnd(*widgets):
+    """返回非宠物/非气泡的当前前台窗口，用作非置顶恢复锚点。"""
+    fg = _foreground_hwnd()
+    if not fg:
+        return None
+    for widget in widgets:
+        if widget is not None and fg == _window_hwnd(widget):
+            return None
+    return fg
+
+
+def _window_rect(hwnd):
+    if _USER32 is None or not hwnd:
+        return None
+    try:
+        rect = wintypes.RECT()
+        if not _USER32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(rect)):
+            return None
+        return rect
+    except Exception:
+        return None
+
+
+def _screen_rect_for_widget(widget):
+    try:
+        screen = widget.screen() if widget is not None else QApplication.primaryScreen()
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        if screen is None:
+            return None
+        geo = screen.geometry()
+        return (geo.left(), geo.top(), geo.right() + 1, geo.bottom() + 1)
+    except Exception:
+        return None
+
+
+def _external_foreground_is_fullscreen(reference_widget, *ignored_widgets):
+    """当前外部前台窗口是否覆盖整块屏幕；用于避免非置顶宠物打断全屏应用。"""
+    fg = _external_foreground_hwnd(reference_widget, *ignored_widgets)
+    rect = _window_rect(fg)
+    screen = _screen_rect_for_widget(reference_widget)
+    if rect is None or screen is None:
+        return False
+    left, top, right, bottom = screen
+    tolerance = 2
+    return (
+        rect.left <= left + tolerance
+        and rect.top <= top + tolerance
+        and rect.right >= right - tolerance
+        and rect.bottom >= bottom - tolerance
+    )
+
+
+def _restore_pair_behind(parent, bubble, anchor_hwnd):
+    """把气泡和宠物压回 anchor_hwnd 后面，保持气泡仍在宠物前面。"""
+    if not anchor_hwnd or bubble is None:
+        return False
+    bubble_hwnd = _window_hwnd(bubble)
+    if not bubble_hwnd:
+        return False
+    ok = _restack_window(bubble, False, after=anchor_hwnd)
+    if parent is not None:
+        ok = _restack_window(parent, False, after=bubble_hwnd) and ok
+    return ok
+
+
+def _drop_window_notopmost(widget):
+    """显式清掉 Win32 topmost 状态，并放到底部，避免 Qt flag 残留。"""
+    if widget is None:
+        return False
+    ok = _restack_window(widget, False)
+    ok = _restack_window(widget, False, after=_HWND_BOTTOM) and ok
+    return ok
 
 
 def _restack_window(widget, on_top, after=None):
@@ -666,11 +744,21 @@ class SmartChatBubble(QWidget):
         关键：无论是否置顶，都必须保留 BypassWindowManagerHint，
         确保气泡与宠物始终处于同一个窗口管理器层级——取消置顶时气泡才会
         真正跟随宠物一起降层，而不是"宠物降了、气泡仍浮顶"的层级错位。"""
+        was_on_top = bool(self.windowFlags() & Qt.WindowStaysOnTopHint)
         self.setWindowFlag(Qt.WindowStaysOnTopHint, bool(on_top))
         self.setWindowFlag(Qt.WindowDoesNotAcceptFocus, True)
-        self.sync_window_layer()
+        if was_on_top and not on_top:
+            self.force_not_topmost()
+        if on_top or self.isVisible():
+            self.sync_window_layer()
 
-    def sync_window_layer(self):
+    def force_not_topmost(self):
+        parent = self.parentWidget() or self.parent()
+        _drop_window_notopmost(self)
+        if parent is not None:
+            _drop_window_notopmost(parent)
+
+    def sync_window_layer(self, anchor_hwnd=None):
         """把气泡原生窗口重新压回主窗口同一层级。"""
         parent = self.parentWidget() or self.parent()
         on_top = bool(self.windowFlags() & Qt.WindowStaysOnTopHint)
@@ -683,9 +771,35 @@ class SmartChatBubble(QWidget):
             parent_hwnd = _window_hwnd(parent)
             if on_top:
                 _restack_window(parent, on_top)
-        _restack_window(self, on_top, parent_hwnd if not on_top else None)
+        if on_top:
+            _restack_window(self, True)
+            if parent is not None:
+                _stack_window_behind(parent, self)
+            return
+        if not self.isVisible():
+            return
+        if anchor_hwnd is None:
+            anchor_hwnd = _external_foreground_hwnd(parent, self)
+        _restack_window(self, False, parent_hwnd)
         if parent is not None:
             _stack_window_behind(parent, self)
+        self.restore_behind_anchor(anchor_hwnd)
+
+    def restore_behind_anchor(self, anchor_hwnd):
+        parent = self.parentWidget() or self.parent()
+        try:
+            if parent is not None and bool(getattr(parent, "cfg", {}).get("always_on_top", False)):
+                return False
+        except Exception:
+            pass
+        return _restore_pair_behind(parent, self, anchor_hwnd)
+
+    def _schedule_restore_behind_anchor(self, anchor_hwnd):
+        if not anchor_hwnd:
+            return
+        self.restore_behind_anchor(anchor_hwnd)
+        QTimer.singleShot(0, lambda h=anchor_hwnd: self.restore_behind_anchor(h))
+        QTimer.singleShot(80, lambda h=anchor_hwnd: self.restore_behind_anchor(h))
 
     def show_message(self, text, duration=None, lock_position=False):
         """显示消息，自动换行，跟随宠物，避开屏幕边缘。
@@ -695,6 +809,7 @@ class SmartChatBubble(QWidget):
         lock_position=True 时气泡只在弹出瞬间定位一次，之后固定不动（猜拳等场景，
         避免气泡随宠物待机/动作上下左右浮动而抽搐）。"""
         parent = self.parent()
+        layer_anchor = _external_foreground_hwnd(parent, self)
         self._follow_locked = bool(lock_position)
         if parent is not None:
             allow_show = getattr(parent, "_can_show_chat_bubble", None)
@@ -734,7 +849,8 @@ class SmartChatBubble(QWidget):
 
         # 显示（不调用 raise_，让层级由窗口标志决定）
         self.show()
-        self.sync_window_layer()
+        self.sync_window_layer(layer_anchor)
+        self._schedule_restore_behind_anchor(layer_anchor)
         self._opacity = 1.0
         self.update()
         # 启动实时跟随，气泡贴着头部随动作上下浮动；锁定时不跟随、保持原位
@@ -750,6 +866,15 @@ class SmartChatBubble(QWidget):
             duration = max(1500, int(duration))
         self._hide_timer.start(duration)
         return True
+
+    def should_defer_auto_message_for_fullscreen(self):
+        parent = self.parentWidget() or self.parent()
+        try:
+            if parent is not None and bool(getattr(parent, "cfg", {}).get("always_on_top", False)):
+                return False
+        except Exception:
+            pass
+        return _external_foreground_is_fullscreen(parent, self)
 
     def _effective_max_width(self):
         """气泡换行用的最大宽度：不超过当前模型宽度的 2 倍。
@@ -1240,8 +1365,7 @@ class IntelligentChatManager:
         也受冷却限制（同一条语录播完 + 0.5s 内不再触发）。
         interaction=True：来自摸头等明确手势触发的语录，摸头本就排除在"点击弹语录"
         开关之外（仍会说），但同样受冷却限制，避免连续摸头/连点刷屏。
-        from_auto_interval=True：仅定时间隔语录使用。未开启置顶时，显示气泡后把窗口
-        压回原前台窗口后面，避免自动闲聊打断用户当前窗口。"""
+        from_auto_interval=True：标记本次来自定时间隔；层级保护已统一下沉到气泡显示层。"""
 
         # 点击 / 互动触发的语录统一过冷却闸：
         #   - from_click 还要再过"点击弹语录"开关；
@@ -1250,6 +1374,15 @@ class IntelligentChatManager:
             return
         if (from_click or interaction) and self._is_speaking:
             return
+        if from_auto_interval:
+            defer = getattr(self.bubble, "should_defer_auto_message_for_fullscreen", None)
+            if callable(defer):
+                try:
+                    if defer():
+                        self._last_play_time = datetime.now()
+                        return
+                except Exception:
+                    pass
 
         if message:
             text = message
@@ -1275,12 +1408,9 @@ class IntelligentChatManager:
         self._is_speaking = True
         disp = max(3000, min(10000, 2500 + len(text) * 150))
         QTimer.singleShot(disp + 500, self._clear_speaking_flag)
-        layer_anchor = self._auto_interval_layer_anchor() if from_auto_interval else None
         if self.bubble.show_message(text, lock_position=lock_position) is False:
             self._is_speaking = False
             return
-        if from_auto_interval:
-            self._restore_auto_interval_layer(layer_anchor)
         self._last_play_time = datetime.now()
 
         # 主动调用时，停止并重新安排下次自动播放，避免紧接着又弹出
@@ -1428,45 +1558,6 @@ class IntelligentChatManager:
             self.say(from_auto_interval=True)
 
         self._schedule_next()
-
-    def _auto_interval_layer_anchor(self):
-        """记录自动语录弹出前的前台窗口；只有非置顶状态才需要恢复层级。"""
-        parent = self.bubble.parentWidget() or self.bubble.parent()
-        try:
-            if parent is not None and bool(getattr(parent, "cfg", {}).get("always_on_top", False)):
-                return None
-        except Exception:
-            pass
-        fg = _foreground_hwnd()
-        if not fg:
-            return None
-        if fg in (_window_hwnd(parent), _window_hwnd(self.bubble)):
-            return None
-        return fg
-
-    def _restore_auto_interval_layer(self, anchor_hwnd):
-        """自动间隔语录不应该把非置顶宠物抬到用户当前窗口前面。"""
-        parent = self.bubble.parentWidget() or self.bubble.parent()
-
-        def restore():
-            try:
-                if parent is not None and bool(getattr(parent, "cfg", {}).get("always_on_top", False)):
-                    return
-            except Exception:
-                pass
-            bubble_hwnd = _window_hwnd(self.bubble)
-            if anchor_hwnd and bubble_hwnd:
-                _restack_window(self.bubble, False, after=anchor_hwnd)
-                if parent is not None:
-                    _restack_window(parent, False, after=bubble_hwnd)
-            elif parent is not None:
-                drop = getattr(parent, "_force_z_order_refresh", None)
-                if callable(drop):
-                    drop(False)
-
-        restore()
-        QTimer.singleShot(0, restore)
-        QTimer.singleShot(80, restore)
 
     def _should_greet(self):
         """是否应该发送时间问候。"""
