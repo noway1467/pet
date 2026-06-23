@@ -35,6 +35,15 @@ if sys.platform.startswith("win"):
         _USER32.GetForegroundWindow.restype = wintypes.HWND
         _USER32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
         _USER32.GetWindowRect.restype = wintypes.BOOL
+        _ENUM_WINDOWS_PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        _USER32.EnumWindows.argtypes = [_ENUM_WINDOWS_PROC, wintypes.LPARAM]
+        _USER32.EnumWindows.restype = wintypes.BOOL
+        _USER32.IsWindowVisible.argtypes = [wintypes.HWND]
+        _USER32.IsWindowVisible.restype = wintypes.BOOL
+        _USER32.IsIconic.argtypes = [wintypes.HWND]
+        _USER32.IsIconic.restype = wintypes.BOOL
+        _USER32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        _USER32.GetClassNameW.restype = ctypes.c_int
         _HWND_TOPMOST = -1
         _HWND_NOTOPMOST = -2
         _HWND_BOTTOM = 1
@@ -43,6 +52,7 @@ if sys.platform.startswith("win"):
         _SWP_NOACTIVATE = 0x0010
         _SWP_SHOWWINDOW = 0x0040
         _SWP_NOOWNERZORDER = 0x0200
+        _IGNORED_FULLSCREEN_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd"}
     except Exception:
         _USER32 = None
 else:
@@ -53,17 +63,27 @@ def _window_hwnd(widget):
     if _USER32 is None or widget is None:
         return None
     try:
-        hwnd = int(widget.winId())
+        hwnd = _hwnd_value(widget.winId())
     except Exception:
         return None
     return hwnd or None
+
+
+def _hwnd_value(hwnd):
+    try:
+        return int(hwnd)
+    except Exception:
+        try:
+            return int(getattr(hwnd, "value", 0) or 0)
+        except Exception:
+            return 0
 
 
 def _foreground_hwnd():
     if _USER32 is None:
         return None
     try:
-        hwnd = int(_USER32.GetForegroundWindow())
+        hwnd = _hwnd_value(_USER32.GetForegroundWindow())
     except Exception:
         return None
     return hwnd or None
@@ -105,21 +125,99 @@ def _screen_rect_for_widget(widget):
         return None
 
 
-def _external_foreground_is_fullscreen(reference_widget, *ignored_widgets):
-    """当前外部前台窗口是否覆盖整块屏幕；用于避免非置顶宠物打断全屏应用。"""
-    fg = _external_foreground_hwnd(reference_widget, *ignored_widgets)
-    rect = _window_rect(fg)
-    screen = _screen_rect_for_widget(reference_widget)
+def _rect_covers_screen(rect, screen, tolerance=2):
     if rect is None or screen is None:
         return False
     left, top, right, bottom = screen
-    tolerance = 2
     return (
         rect.left <= left + tolerance
         and rect.top <= top + tolerance
         and rect.right >= right - tolerance
         and rect.bottom >= bottom - tolerance
     )
+
+
+def _window_class_name(hwnd):
+    if _USER32 is None or not hwnd:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(256)
+        length = _USER32.GetClassNameW(wintypes.HWND(hwnd), buf, len(buf))
+        if length <= 0:
+            return ""
+        return buf.value
+    except Exception:
+        return ""
+
+
+def _is_ignored_fullscreen_window(hwnd):
+    try:
+        return _window_class_name(hwnd) in _IGNORED_FULLSCREEN_CLASSES
+    except Exception:
+        return False
+
+
+def _enum_external_windows_top_to_bottom(*widgets):
+    """按 Z 序枚举外部可见窗口；用于找出被普通前台窗口压在后面的全屏窗口。"""
+    if _USER32 is None:
+        return []
+    ignored = {_window_hwnd(widget) for widget in widgets if widget is not None}
+    ignored.discard(None)
+    windows = []
+
+    try:
+        callback_type = _ENUM_WINDOWS_PROC
+    except Exception:
+        return []
+
+    @callback_type
+    def _collect(hwnd, _lparam):
+        value = _hwnd_value(hwnd)
+        if not value or value in ignored:
+            return True
+        try:
+            if not _USER32.IsWindowVisible(wintypes.HWND(value)):
+                return True
+            if _USER32.IsIconic(wintypes.HWND(value)):
+                return True
+            if _is_ignored_fullscreen_window(value):
+                return True
+        except Exception:
+            return True
+        windows.append(value)
+        return True
+
+    try:
+        _USER32.EnumWindows(_collect, 0)
+    except Exception:
+        return []
+    return windows
+
+
+def _external_fullscreen_hwnd(reference_widget, *ignored_widgets):
+    """返回当前屏幕上第一个外部全屏窗口，即使它不是前台窗口。"""
+    screen = _screen_rect_for_widget(reference_widget)
+    if screen is None:
+        return None
+    for hwnd in _enum_external_windows_top_to_bottom(reference_widget, *ignored_widgets):
+        if _is_ignored_fullscreen_window(hwnd):
+            continue
+        if _rect_covers_screen(_window_rect(hwnd), screen):
+            return hwnd
+    return None
+
+
+def _best_non_topmost_anchor_hwnd(reference_widget, *ignored_widgets):
+    """非置顶时优先压到全屏窗口后面；没有全屏窗口再跟随当前前台窗口降层。"""
+    fullscreen_hwnd = _external_fullscreen_hwnd(reference_widget, *ignored_widgets)
+    if fullscreen_hwnd:
+        return fullscreen_hwnd
+    return _external_foreground_hwnd(reference_widget, *ignored_widgets)
+
+
+def _external_foreground_is_fullscreen(reference_widget, *ignored_widgets):
+    """当前屏幕是否存在外部全屏窗口；用于避免非置顶宠物打断全屏应用。"""
+    return bool(_external_fullscreen_hwnd(reference_widget, *ignored_widgets))
 
 
 def _restore_pair_behind(parent, bubble, anchor_hwnd):
@@ -779,7 +877,7 @@ class SmartChatBubble(QWidget):
         if not self.isVisible():
             return
         if anchor_hwnd is None:
-            anchor_hwnd = _external_foreground_hwnd(parent, self)
+            anchor_hwnd = _best_non_topmost_anchor_hwnd(parent, self)
         _restack_window(self, False, parent_hwnd)
         if parent is not None:
             _stack_window_behind(parent, self)
@@ -809,7 +907,7 @@ class SmartChatBubble(QWidget):
         lock_position=True 时气泡只在弹出瞬间定位一次，之后固定不动（猜拳等场景，
         避免气泡随宠物待机/动作上下左右浮动而抽搐）。"""
         parent = self.parent()
-        layer_anchor = _external_foreground_hwnd(parent, self)
+        layer_anchor = _best_non_topmost_anchor_hwnd(parent, self)
         self._follow_locked = bool(lock_position)
         if parent is not None:
             allow_show = getattr(parent, "_can_show_chat_bubble", None)

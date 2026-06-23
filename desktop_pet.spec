@@ -2,7 +2,7 @@
 """PyInstaller 打包脚本：生成 dist/DesktopPet/DesktopPet.exe（onedir，无控制台窗口）。
 
 构建：  .venv\\Scripts\\python.exe -m PyInstaller desktop_pet.spec --noconfirm
-版本：  v3.9.5
+版本：  v3.9.6
 说明：  build_exe.bat 只更新 dist/DesktopPet/_internal 和 DesktopPet.exe；模型目录由用户维护。
 """
 from PyInstaller.utils.hooks import collect_all, collect_submodules
