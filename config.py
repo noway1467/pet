@@ -26,7 +26,7 @@ DEFAULTS = {
     "live2d_size": 300,        # Live2D 窗口边长(px)
     "live2d_zoom": 1.0,        # 旧版全局缩放（保留以兼容旧配置；现按模型存于 live2d_views）
     "live2d_yoff": 0.0,        # 旧版全局竖直偏移（同上）
-    "live2d_views": {},        # 按模型构图：{模型路径: {"zoom":float,"xoff":float,"yoff":float,"ratio":float}}
+    "live2d_views": {},        # 按模型构图：{模型路径: {"zoom":float,"xoff":float,"yoff":float,"ratio":float,"canvas_scale":float}}
     "live2d_height_ratio": 1.4, # 新模型默认画布高/宽比例（越大越高，适合站姿立绘）
     "live2d_auto_expression": False,  # Live2D：是否每隔几秒自动随机切换一个表情
     "favorites": [],           # 常用宠物：[{"type":"image"|"live2d","path":..,"name":..}]
