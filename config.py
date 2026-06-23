@@ -43,6 +43,7 @@ DEFAULTS = {
     "voice_volume": 0.5,       # 模型语音音量 0.0~1.0（默认 50%，避免太吵）
     "chat_min_interval": 30,   # 气泡语录自动播放的最短间隔(秒)
     "chat_max_interval": 120,  # 气泡语录自动播放的最长间隔(秒)（也是"必播一次"的上限）
+    "chat_custom_interval": 10, # 自定义固定自动语录间隔(秒)，用于快速测试或精细控制
     "click_action_enabled": True,  # 点击宠物时是否触发内置窗口动作（关闭后点击不再"跳"）
     "click_action": "hop",     # 点击宠物触发的内置动作：hop/jump/nod/wiggle/tilt/lean/spin/dance
     "click_quote_enabled": True,  # 点击宠物时弹出语录（排除摸头和自动间隔）
