@@ -644,18 +644,19 @@ class PetWindow(QWidget):
         name = self.cfg["character"]
         if name == "live2d":
             try:
-                from live2d_pet import Live2DPet
+                from live2d_pet import create_live2d_pet
                 v = self._l2d_view_of(self.cfg["live2d_model"])
                 # 优先用这个模型自己的记忆，再用该模型保存过的构图尺寸；
                 # 都没有（全新模型）才用固定默认值，绝不沿用上一个模型的尺寸（各记各的）。
                 model_mem = self._get_model_memory()
                 size = model_mem.get("size") or v["size"] or DEFAULT_LIVE2D_SIZE
                 self.cfg["live2d_size"] = int(size)            # 让"大小"菜单反映当前模型尺寸
-                self.renderer = Live2DPet(self.cfg["live2d_model"],
-                                          size,
-                                          v["zoom"], v["xoff"], v["yoff"], self,
-                                          ratio=v["ratio"],
-                                          canvas_scale=v["canvas_scale"])
+                self.renderer = create_live2d_pet(self.cfg["live2d_model"],
+                                                  size,
+                                                  v["zoom"], v["xoff"], v["yoff"], self,
+                                                  ratio=v["ratio"],
+                                                  canvas_scale=v["canvas_scale"])
+                self.renderer.set_follow(self.cfg.get("follow", True))
                 self.renderer.on_error = self._on_live2d_render_error
                 self.renderer.on_resized = self._fit_window_to_renderer
                 self.renderer.on_voice_with_text = self._on_voice_with_text
@@ -2033,7 +2034,8 @@ class PetWindow(QWidget):
         auto.triggered.connect(self._toggle_auto_expression)
         sub.addSeparator()
         for eid in exprs:
-            label = eid
+            label = (self.renderer.expression_label(eid)
+                     if hasattr(self.renderer, "expression_label") else eid)
             for suf in (".exp3.json", ".exp.json", ".json"):
                 if label.lower().endswith(suf):
                     label = label[: -len(suf)]
@@ -2617,7 +2619,7 @@ class PetWindow(QWidget):
             self.renderer.set_facing(self.cfg["facing"])
 
     def _play_action(self, action):
-        if isinstance(self.renderer, (ImagePet, PixelPet)):
+        if hasattr(self.renderer, "play"):
             self.renderer.play(action)
         else:
             # Live2D：模型无对应内置动作时，用轻量窗口位移兜底。
@@ -5122,13 +5124,13 @@ class Live2DPicker(QDialog):
 
     def _spawn_preview(self, path):
         """创建预览渲染器，使用较小的尺寸减少内存占用。"""
-        from live2d_pet import Live2DPet
+        from live2d_pet import create_live2d_pet
         try:
             # 使用较小的预览尺寸，减少内存占用
             preview_size = 220
-            pv = Live2DPet(path, preview_size, self._zoom, self._xoff, self._yoff,
-                           self.preview_view, ratio=self._ratio, preview_mode=True,
-                           canvas_scale=self._canvas_scale)
+            pv = create_live2d_pet(path, preview_size, self._zoom, self._xoff, self._yoff,
+                                   self.preview_view, ratio=self._ratio, preview_mode=True,
+                                   canvas_scale=self._canvas_scale)
             pv.set_follow(False)
             pv.on_error = lambda *a, _pv=pv: self._preview_failed(_pv)
             pv.on_resized = lambda *a, _pv=pv: self._fit_preview(_pv)

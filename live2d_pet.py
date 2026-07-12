@@ -2044,3 +2044,16 @@ class Live2DPet(QWidget):
         if gl is not None:
             return getattr(gl, name)
         raise AttributeError(name)
+
+
+def create_live2d_pet(model_path, size=300, zoom=1.0, xoff=0.0, yoff=0.0,
+                      parent=None, ratio=None, preview_mode=False, canvas_scale=1.0):
+    """按模型声明创建渲染器；普通模型继续使用 Cubism。"""
+    from taffy_pet import TaffyPet, is_taffy_model
+    if is_taffy_model(model_path):
+        return TaffyPet(model_path, size, zoom, xoff, yoff, parent,
+                        ratio=ratio, preview_mode=preview_mode,
+                        canvas_scale=canvas_scale)
+    return Live2DPet(model_path, size, zoom, xoff, yoff, parent,
+                     ratio=ratio, preview_mode=preview_mode,
+                     canvas_scale=canvas_scale)
