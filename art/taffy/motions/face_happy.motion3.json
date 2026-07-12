@@ -1,0 +1,101 @@
+{
+  "Version": 3,
+  "Meta": {
+    "Duration": 1.35,
+    "Fps": 30.0,
+    "Loop": false,
+    "AreBeziersRestricted": true,
+    "CurveCount": 5,
+    "TotalSegmentCount": 15,
+    "TotalPointCount": 20,
+    "UserDataCount": 0,
+    "TotalUserDataSize": 0
+  },
+  "Curves": [
+    {
+      "Target": "Parameter",
+      "Id": "ParamEyeLOpen",
+      "Segments": [
+        0,
+        1,
+        0,
+        0.18,
+        0,
+        0,
+        1.0,
+        0,
+        0,
+        1.35,
+        1
+      ]
+    },
+    {
+      "Target": "Parameter",
+      "Id": "ParamEyeROpen",
+      "Segments": [
+        0,
+        1,
+        0,
+        0.18,
+        0,
+        0,
+        1.0,
+        0,
+        0,
+        1.35,
+        1
+      ]
+    },
+    {
+      "Target": "Parameter",
+      "Id": "ParamEyeLSmile",
+      "Segments": [
+        0,
+        0,
+        0,
+        0.18,
+        1,
+        0,
+        1.0,
+        1,
+        0,
+        1.35,
+        0
+      ]
+    },
+    {
+      "Target": "Parameter",
+      "Id": "ParamEyeRSmile",
+      "Segments": [
+        0,
+        0,
+        0,
+        0.18,
+        1,
+        0,
+        1.0,
+        1,
+        0,
+        1.35,
+        0
+      ]
+    },
+    {
+      "Target": "Parameter",
+      "Id": "ParamMouthForm",
+      "Segments": [
+        0,
+        0,
+        0,
+        0.18,
+        1,
+        0,
+        1.0,
+        1,
+        0,
+        1.35,
+        0
+      ]
+    }
+  ]
+}

@@ -1,0 +1,99 @@
+{
+  "Version": 3,
+  "DesktopPetRenderer": "taffy-layered",
+  "FileReferences": {
+    "Moc": "taffy_live2d_source.moc3",
+    "Textures": [
+      "taffy_live2d_source.2048/texture_00.png"
+    ],
+    "Motions": {
+      "idle": [
+        {
+          "File": "motions/idle.motion3.json"
+        }
+      ],
+      "jump": [
+        {
+          "File": "motions/jump.motion3.json"
+        }
+      ],
+      "hop": [
+        {
+          "File": "motions/hop.motion3.json"
+        }
+      ],
+      "nod": [
+        {
+          "File": "motions/nod.motion3.json"
+        }
+      ],
+      "wiggle": [
+        {
+          "File": "motions/wiggle.motion3.json"
+        }
+      ],
+      "tilt": [
+        {
+          "File": "motions/tilt.motion3.json"
+        }
+      ],
+      "lean": [
+        {
+          "File": "motions/lean.motion3.json"
+        }
+      ],
+      "spin": [
+        {
+          "File": "motions/spin.motion3.json"
+        }
+      ],
+      "dance": [
+        {
+          "File": "motions/dance.motion3.json"
+        }
+      ],
+      "face_happy": [
+        { "File": "motions/face_happy.motion3.json" }
+      ],
+      "face_shy": [
+        { "File": "motions/face_shy.motion3.json" }
+      ],
+      "face_surprised": [
+        { "File": "motions/face_surprised.motion3.json" }
+      ],
+      "face_nervous": [
+        { "File": "motions/face_nervous.motion3.json" }
+      ],
+      "face_sad": [
+        { "File": "motions/face_sad.motion3.json" }
+      ],
+      "face_smug": [
+        { "File": "motions/face_smug.motion3.json" }
+      ],
+      "face_angry": [
+        { "File": "motions/face_angry.motion3.json" }
+      ],
+      "face_wink": [
+        { "File": "motions/face_wink.motion3.json" }
+      ]
+    },
+    "DisplayInfo": "taffy_live2d_source.cdi3.json"
+  },
+  "Groups": [
+    {
+      "Target": "Parameter",
+      "Name": "EyeBlink",
+      "Ids": [
+        "ParamEyeLOpen",
+        "ParamEyeROpen"
+      ]
+    },
+    {
+      "Target": "Parameter",
+      "Name": "LipSync",
+      "Ids": [
+        "ParamMouthOpenY"
+      ]
+    }
+  ]
+}
