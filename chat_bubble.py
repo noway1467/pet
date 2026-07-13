@@ -20,6 +20,9 @@ from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath, QFont, QFontMetr
 from PySide6.QtWidgets import QWidget, QApplication
 
 
+_HWND_BOTTOM = 1
+
+
 if sys.platform.startswith("win"):
     try:
         import ctypes
@@ -40,6 +43,8 @@ if sys.platform.startswith("win"):
         _USER32.EnumWindows.restype = wintypes.BOOL
         _USER32.IsWindowVisible.argtypes = [wintypes.HWND]
         _USER32.IsWindowVisible.restype = wintypes.BOOL
+        _USER32.IsWindow.argtypes = [wintypes.HWND]
+        _USER32.IsWindow.restype = wintypes.BOOL
         _USER32.IsIconic.argtypes = [wintypes.HWND]
         _USER32.IsIconic.restype = wintypes.BOOL
         _USER32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
@@ -109,6 +114,15 @@ def _window_rect(hwnd):
         return rect
     except Exception:
         return None
+
+
+def _is_valid_window_hwnd(hwnd):
+    if _USER32 is None or not hwnd:
+        return False
+    try:
+        return bool(_USER32.IsWindow(wintypes.HWND(hwnd)))
+    except Exception:
+        return False
 
 
 def _screen_rect_for_widget(widget):
@@ -805,6 +819,9 @@ class SmartChatBubble(QWidget):
         # 锁定位置：True 时气泡弹出后固定在原处、不再跟随宠物上下左右浮动（仅猜拳等场景启用），
         # 避免宠物待机/动作时气泡随头部高度反复重测而抽搐。
         self._follow_locked = False
+        # Qt showEvent 可能在外部窗口锚点丢失后再次同步层级；记住最近一次有效锚点，
+        # 避免气泡与其 owner 宠物被重新抬到普通窗口栈顶。
+        self._non_topmost_anchor_hwnd = None
 
     def _follow_tick(self):
         """节流地重测模型内容包围盒并重新贴合，使气泡跟随实时头部高度。"""
@@ -865,10 +882,24 @@ class SmartChatBubble(QWidget):
 
     def force_not_topmost(self):
         parent = self.parentWidget() or self.parent()
-        anchor_hwnd = _best_non_topmost_anchor_hwnd(parent or self, self, parent)
+        anchor_hwnd = self._resolve_non_topmost_anchor()
         _drop_window_notopmost(self, anchor_hwnd)
         if parent is not None:
             _drop_window_notopmost(parent, _window_hwnd(self) or anchor_hwnd)
+
+    def _resolve_non_topmost_anchor(self, anchor_hwnd=None):
+        """解析非置顶锚点；没有外部窗口时回退旧版底层兜底。"""
+        parent = self.parentWidget() or self.parent()
+        bubble_hwnd = _window_hwnd(self)
+        parent_hwnd = _window_hwnd(parent)
+        detected_hwnd = _best_non_topmost_anchor_hwnd(parent or self, self, parent)
+        for candidate in (anchor_hwnd, detected_hwnd, self._non_topmost_anchor_hwnd):
+            if candidate in (bubble_hwnd, parent_hwnd):
+                continue
+            if _is_valid_window_hwnd(candidate):
+                self._non_topmost_anchor_hwnd = candidate
+                return candidate
+        return _HWND_BOTTOM
 
     def sync_window_layer(self, anchor_hwnd=None):
         """把气泡原生窗口重新压回主窗口同一层级。"""
@@ -890,8 +921,7 @@ class SmartChatBubble(QWidget):
             return
         if not self.isVisible():
             return
-        if anchor_hwnd is None:
-            anchor_hwnd = _best_non_topmost_anchor_hwnd(parent, self)
+        anchor_hwnd = self._resolve_non_topmost_anchor(anchor_hwnd)
         _restack_window(self, False, parent_hwnd)
         if parent is not None:
             _stack_window_behind(parent, self)
@@ -904,6 +934,7 @@ class SmartChatBubble(QWidget):
                 return False
         except Exception:
             pass
+        anchor_hwnd = self._resolve_non_topmost_anchor(anchor_hwnd)
         return _restore_pair_behind(parent, self, anchor_hwnd)
 
     def _schedule_restore_behind_anchor(self, anchor_hwnd):
@@ -921,7 +952,7 @@ class SmartChatBubble(QWidget):
         lock_position=True 时气泡只在弹出瞬间定位一次，之后固定不动（猜拳等场景，
         避免气泡随宠物待机/动作上下左右浮动而抽搐）。"""
         parent = self.parent()
-        layer_anchor = _best_non_topmost_anchor_hwnd(parent, self)
+        layer_anchor = self._resolve_non_topmost_anchor()
         self._follow_locked = bool(lock_position)
         if parent is not None:
             allow_show = getattr(parent, "_can_show_chat_bubble", None)
