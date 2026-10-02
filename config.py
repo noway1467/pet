@@ -6,7 +6,12 @@ CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".desktop-pet")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 
 DEFAULTS = {
-    "character": "slime",      # slime | cat | image | live2d
+    "character": "slime",      # slime | cat | image | live2d | whale
+    "whale_size": 240,         # 鲸鱼娘统一帧缩放高度(px)
+    "whale_facing": -1,        # 行走方向：-1 左 / 1 右，使用独立方向帧
+    "whale_auto_actions": True, # 鲸鱼娘自动眨眼、张望、思考和日常动作
+    "quick_launch_items": None, # None=首次显示内置快捷项；[]=用户清空；每项含 id/name/path/kind/keywords
+    "quick_search_engine": "bing", # bing | baidu | google；仅显式搜索时打开默认浏览器
     "scale": 5,                # 像素放大倍数（程序化角色）
     "style": "pixel",          # pixel | smooth（程序化角色画风）
     "always_on_top": False,    # 是否总在最前
@@ -24,6 +29,7 @@ DEFAULTS = {
     "regions": {},             # 各图片的五官位置 {路径: {eyeL,eyeR,mouth}}
     "live2d_model": "",        # Live2D 模型设置文件路径（Cubism2: model.json/*.model.json，Cubism3: *.model3.json）
     "live2d_size": 300,        # Live2D 窗口边长(px)
+    "live2d_texture_limit": 2048, # 纹理长边缓存档位：2048 均衡 / 4096 高清 / 0 原图；不改模型源文件
     "live2d_zoom": 1.0,        # 旧版全局缩放（保留以兼容旧配置；现按模型存于 live2d_views）
     "live2d_yoff": 0.0,        # 旧版全局竖直偏移（同上）
     "live2d_views": {},        # 按模型构图：{模型路径: {"zoom":float,"xoff":float,"yoff":float,"ratio":float,"canvas_scale":float}}

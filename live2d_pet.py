@@ -17,13 +17,14 @@ import random
 import time
 import sys
 import gc
+import importlib
+import importlib.util
 
 from PySide6.QtCore import Qt, QTimer, QSize, QRect
 from PySide6.QtGui import QImage, QRegion, QPainter
 from PySide6.QtWidgets import QWidget
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
-from voice_player import VoicePlayer
 
 # 加载语音翻译数据库
 _VOICE_TRANSLATIONS = None
@@ -56,21 +57,12 @@ def _load_voice_translations():
 
     return _VOICE_TRANSLATIONS
 
-try:
-    import live2d.v3 as live2d_v3
-    try:
-        import live2d.v2cpp as live2d_v2   # C++ 加速版：比纯 Python v2 更稳（不会因裁剪遮罩崩溃）也更省 CPU
-        LIVE2D_V2_BACKEND = "v2cpp"
-    except Exception:
-        import live2d.v2 as live2d_v2       # 退化：纯 Python v2
-        LIVE2D_V2_BACKEND = "v2"
-    LIVE2D_AVAILABLE = True
-    LIVE2D_IMPORT_ERROR = ""
-except Exception as e:  # noqa: BLE001  导入失败时整体不可用
-    live2d_v2 = live2d_v3 = None
-    LIVE2D_AVAILABLE = False
-    LIVE2D_IMPORT_ERROR = repr(e)
-    LIVE2D_V2_BACKEND = ""
+# 扫模型只需 JSON/I/O，不应顺带加载两套 Cubism、NumPy 和音频 DLL。
+# 原生运行时在真正创建对应版本的渲染器时再导入，避免后台扫描持有 import 锁卡住 UI。
+live2d_v2 = live2d_v3 = None
+LIVE2D_AVAILABLE = importlib.util.find_spec("live2d") is not None
+LIVE2D_IMPORT_ERROR = "" if LIVE2D_AVAILABLE else "live2d-py 未安装"
+LIVE2D_V2_BACKEND = ""
 
 # 每个版本的运行时 init() 只需调用一次（全局）
 _inited = set()
@@ -123,6 +115,16 @@ def detect_version(model_path):
 
 
 def _module_for(version):
+    global live2d_v2, live2d_v3, LIVE2D_V2_BACKEND
+    if version == "v3" and live2d_v3 is None:
+        live2d_v3 = importlib.import_module("live2d.v3")
+    elif version == "v2" and live2d_v2 is None:
+        try:
+            live2d_v2 = importlib.import_module("live2d.v2cpp")
+            LIVE2D_V2_BACKEND = "v2cpp"
+        except ImportError:
+            live2d_v2 = importlib.import_module("live2d.v2")
+            LIVE2D_V2_BACKEND = "v2"
     return live2d_v3 if version == "v3" else live2d_v2
 
 
@@ -248,7 +250,8 @@ class _Live2DGL(QOpenGLWidget):
     "把 GL 表面合成进窗口"这一步。所以改由普通 QWidget 用 QPainter 画它的 framebuffer，
     走普通控件逐像素 alpha 合成，桌面上就只剩宠物本体、没有任何黑框。"""
     def __init__(self, model_path, size=300, zoom=1.0, xoff=0.0, yoff=0.0,
-                 parent=None, ratio=None, preview_mode=False, canvas_scale=1.0):
+                 parent=None, ratio=None, preview_mode=False, canvas_scale=1.0,
+                 texture_limit=2048):
         super().__init__(parent)
         if not LIVE2D_AVAILABLE:
             raise RuntimeError(
@@ -264,6 +267,13 @@ class _Live2DGL(QOpenGLWidget):
         self._shutting_down = False
         self.version = detect_version(model_path)
         self.l2d = _module_for(self.version)
+        from live2d_assets import prepare_async
+        import config
+        self._texture_limit = texture_limit
+        self._texture_cache_root = os.path.join(config.CONFIG_DIR, 'cache', 'live2d-textures')
+        self._texture_future = prepare_async(model_path, texture_limit, self._texture_cache_root)
+        self._prepared_path = model_path
+        self._prepare_warning = ''
         # Live2D 立绘多为竖图：用竖向窗口（高=宽×比例），配合库的等比适配，
         # 整身都能显示不被裁。比例可按模型调高，解决"模型太高被切"。
         self._w = int(size)
@@ -290,6 +300,7 @@ class _Live2DGL(QOpenGLWidget):
         self._extra_motions = {}       # 我们额外登记的散落动作 {组名: 数量}（模型没在 json 里声明动作时用）
         self._declared_motion_groups = set()  # model3/json 明确声明的动作组；散落动作不自动当待机
         self._motion_data = None       # 懒加载：{组名:[{index,file,sound}]}（含每条动作配套的语音绝对路径）
+        from voice_player import VoicePlayer
         self._voice = VoicePlayer(enabled=not self._preview_mode)  # 预览模式不预热语音路径
         self._expressions = None       # 懒加载：本模型可用的表情 id 列表
         self._expression_params = {}    # {expr_id: [(param_id, value, blend), ...]}：用于表情回退
@@ -388,7 +399,8 @@ class _Live2DGL(QOpenGLWidget):
             pass
         self.model = None
         self._reset_model_runtime()
-        gc.collect()
+        self._last_grab_img = None
+        self._mask_region = None
 
     def _load_current_model(self):
         """在当前 OpenGL 上下文里加载 self.model_path 指向的模型。"""
@@ -399,9 +411,9 @@ class _Live2DGL(QOpenGLWidget):
         self.model = self.l2d.LAppModel()
         if self.version == "v3":
             try:
-                self.model.LoadModelJson(self.model_path, 4)
+                self.model.LoadModelJson(self._prepared_path, 4)
             except TypeError:
-                self.model.LoadModelJson(self.model_path)
+                self.model.LoadModelJson(self._prepared_path)
             try:
                 self.model.CreateRenderer(2)
             except Exception:
@@ -410,7 +422,7 @@ class _Live2DGL(QOpenGLWidget):
                 except Exception:
                     pass
         else:
-            self.model.LoadModelJson(self.model_path)
+            self.model.LoadModelJson(self._prepared_path)
         for setter in ("SetAutoBreathEnable", "SetAutoBlinkEnable"):
             try:
                 getattr(self.model, setter)(True)
@@ -1562,6 +1574,7 @@ class _Live2DGL(QOpenGLWidget):
         if getattr(self, "_shutting_down", False):
             return
         self._shutting_down = True
+        from live2d_assets import discard_future
         self.timer.stop()
         if hasattr(self, "_mask_timer"):
             self._mask_timer.stop()
@@ -1580,6 +1593,8 @@ class _Live2DGL(QOpenGLWidget):
                 self.doneCurrent()
             except Exception:
                 pass
+            # 先销毁模型，再释放缓存租约；其他准备任务不能提前回收其动作文件。
+            discard_future(self._texture_future)
 
     def hideEvent(self, ev):
         self.timer.stop()
@@ -1602,7 +1617,23 @@ class _Live2DGL(QOpenGLWidget):
     def initializeGL(self):
         self._clear_gl_background()
         self._prepare_transparent_blending()
-        self._load_current_model()
+        self._try_load_current_model()
+
+    def _try_load_current_model(self):
+        if self.model is not None or self._errored or not self._texture_future.done():
+            return
+        try:
+            self._prepared_path = self._texture_future.result().path
+        except Exception as error:
+            # 可选引用缺失或缓存不可写时保留原有加载能力，不交付残缺动作的副本。
+            self._prepared_path = self.model_path
+            self._prepare_warning = str(error)
+            import warnings
+            warnings.warn('纹理缓存未生效，使用原图：' + str(error), RuntimeWarning)
+        try:
+            self._load_current_model()
+        except Exception as error:
+            self._handle_render_error(error)
 
     def _clear_gl_background(self):
         """尽早把 OpenGL 背景清成透明，避免模型加载首帧时露出默认黑底。"""
@@ -1631,6 +1662,15 @@ class _Live2DGL(QOpenGLWidget):
     def reload_model(self, model_path, size=None, zoom=None, xoff=None, yoff=None,
                      ratio=None, canvas_scale=None):
         """在不重建 QWidget 的情况下热切换 Live2D 模型。"""
+        self.makeCurrent()
+        try:
+            self._release_model()
+        finally:
+            self.doneCurrent()
+        from live2d_assets import prepare_async, discard_future
+        discard_future(self._texture_future)
+        self._texture_future = prepare_async(model_path, self._texture_limit, self._texture_cache_root)
+        self._prepared_path = model_path
         self.model_path = model_path
         self.version = detect_version(model_path)
         self.l2d = _module_for(self.version)
@@ -1658,8 +1698,7 @@ class _Live2DGL(QOpenGLWidget):
             pass
         try:
             self._clear_gl_background()
-            self._release_model()
-            self._load_current_model()
+            self._try_load_current_model()
         finally:
             try:
                 self.doneCurrent()
@@ -1728,11 +1767,12 @@ class _Live2DGL(QOpenGLWidget):
     def paintGL(self):
         if getattr(self, "_shutting_down", False):
             return
+        self._try_load_current_model()
         self._clear_gl_background()
+        if not self.model or self._errored:
+            return
         self.l2d.clearBuffer(0.0, 0.0, 0.0, 0.0)   # 透明背景
         self._prepare_transparent_blending()
-        if not self.model:
-            return
         try:
             now = time.perf_counter()
             dt = 0.0 if self._last_t is None else max(0.0, now - self._last_t)
@@ -1787,9 +1827,11 @@ class _Live2DGL(QOpenGLWidget):
         self.timer.stop()
         if hasattr(self, "_mask_timer"):
             self._mask_timer.stop()
-        self.model = None
-        if callable(self.on_error):
-            QTimer.singleShot(0, lambda: self.on_error(self.model_path, repr(e)))
+        # 保留 model 到 shutdown，在仍有效的 GL 上下文中释放，不能在报错路径遗失资源。
+        callback, path, message = self.on_error, self.model_path, repr(e)
+        if callable(callback):
+            QTimer.singleShot(0, lambda: (
+                not self._shutting_down and self.on_error is callback and callback(path, message)))
 
 
 class Live2DPet(QWidget):
@@ -1804,7 +1846,8 @@ class Live2DPet(QWidget):
     其余未显式定义的方法/属性通过 __getattr__ 透明转发到离屏渲染器。"""
 
     def __init__(self, model_path, size=300, zoom=1.0, xoff=0.0, yoff=0.0,
-                 parent=None, ratio=None, preview_mode=False, canvas_scale=1.0):
+                 parent=None, ratio=None, preview_mode=False, canvas_scale=1.0,
+                 texture_limit=2048):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WA_NoSystemBackground, True)
@@ -1813,13 +1856,14 @@ class Live2DPet(QWidget):
         self._shutting_down = False
         self._frame = None
         self._pending_resize_guard = 0
+        self._resize_ready_after = 0.0
         # main.py 会给这些回调赋值（赋到本控件上，再桥接到离屏渲染器）
         self.on_error = None
         self.on_resized = None
         self.on_voice_with_text = None
         # 离屏 GL 渲染器：parent=None、永不 show()，靠 grabFramebuffer 驱动
         self._gl = _Live2DGL(model_path, size, zoom, xoff, yoff,
-                             None, ratio, preview_mode, canvas_scale)
+                             None, ratio, preview_mode, canvas_scale, texture_limit)
         # 离屏控件 update() 不会触发 paintGL，所以停掉它自带的刷新/遮罩定时器，
         # 改由本控件按帧 grabFramebuffer 主动驱动渲染。
         try:
@@ -1855,6 +1899,8 @@ class Live2DPet(QWidget):
             return
         if img is None or img.isNull():
             return
+        if gl.model is None or gl._errored:
+            return
         # 刚改完画布尺寸时，QOpenGLWidget 可能短暂读回上一帧的 FBO 大小。
         # 这类过渡帧在 HiDPI 下会表现成双影、镜像脚或边缘花屏；直接丢弃，
         # 等 Qt 把新的 framebuffer 真正重建好后再显示。
@@ -1865,6 +1911,8 @@ class Live2DPet(QWidget):
         if self._pending_resize_guard > 0:
             self._pending_resize_guard -= 1
             return
+        if time.monotonic() < self._resize_ready_after:
+            return
         gl._last_grab_img = img          # 供 refresh_content_box 复用，避免气泡跟随时额外抓帧
         w = max(1, self.width())
         dpr = img.width() / float(w)
@@ -1872,6 +1920,8 @@ class Live2DPet(QWidget):
             img.setDevicePixelRatio(dpr)
         self._frame = img
         self.update()
+        if gl._content_box is None:
+            gl._content_box = gl._measure_content(img)
 
     def paintEvent(self, _ev):
         if self._frame is None:
@@ -1884,6 +1934,26 @@ class Live2DPet(QWidget):
     def clear_frame(self):
         self._frame = None
         self.update()
+
+    def content_inset(self):
+        # 主窗口定位/气泡不应触发初始化或额外 GPU 读回；首帧由唯一的 render timer 驱动。
+        gl = self._gl
+        if gl is None:
+            return (0, 0, 0, 0)
+        if gl._content_box is None and self._frame is not None:
+            gl._content_box = gl._measure_content(self._frame)
+        box = gl._content_box
+        if box is None:
+            return (0, 0, 0, 0)
+        x0, y0, x1, y1 = box
+        return (max(0, x0) * self.width(), max(0, y0) * self.height(),
+                max(0, 1 - x1) * self.width(), max(0, 1 - y1) * self.height())
+
+    def sync_alpha_mask(self, force=False):
+        # 本显示层已逐像素透明，离屏窗口的 QRegion 从未应用；避免无用的抓帧和逐行扫描。
+        if force:
+            self.refresh_content_box()
+        return self._frame is not None
 
     # ---------- 回调桥接 ----------
     def _on_gl_error(self, *a):
@@ -1942,7 +2012,15 @@ class Live2DPet(QWidget):
     def set_live2d_size(self, s):
         self._frame = None
         self._pending_resize_guard = 2
-        self._gl.set_live2d_size(s)
+        # Windows 离屏 FBO 热改尺寸会短暂读回同尺寸的过渡脏帧；等事件循环稳定再显示。
+        self._resize_ready_after = time.monotonic() + 0.12
+        self._gl._last_grab_img = None
+        self._gl._mask_region = None
+        self._gl.makeCurrent()
+        try:
+            self._gl.set_live2d_size(s)
+        finally:
+            self._gl.doneCurrent()
         self._sync_size_from_gl()
 
     def set_height_ratio(self, r):
@@ -2047,7 +2125,8 @@ class Live2DPet(QWidget):
 
 
 def create_live2d_pet(model_path, size=300, zoom=1.0, xoff=0.0, yoff=0.0,
-                      parent=None, ratio=None, preview_mode=False, canvas_scale=1.0):
+                      parent=None, ratio=None, preview_mode=False, canvas_scale=1.0,
+                      texture_limit=2048):
     """按模型声明创建渲染器；普通模型继续使用 Cubism。"""
     from taffy_pet import TaffyPet, is_taffy_model
     if is_taffy_model(model_path):
@@ -2056,4 +2135,4 @@ def create_live2d_pet(model_path, size=300, zoom=1.0, xoff=0.0, yoff=0.0,
                         canvas_scale=canvas_scale)
     return Live2DPet(model_path, size, zoom, xoff, yoff, parent,
                      ratio=ratio, preview_mode=preview_mode,
-                     canvas_scale=canvas_scale)
+                     canvas_scale=canvas_scale, texture_limit=texture_limit)

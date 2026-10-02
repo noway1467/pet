@@ -24,6 +24,7 @@ import config
 import system
 from pixel_pet import PixelPet, render_icon, CHARACTERS
 from image_pet import ImagePet
+from whale_pet import WhalePet, ACTION_LABELS as WHALE_ACTIONS, EXTRA_LABELS as WHALE_EXTRAS
 from chat_bubble import ChatBubble, ChatManager, _best_non_topmost_anchor_hwnd, _restack_window
 from affinity import AffinitySystem
 
@@ -570,6 +571,8 @@ class PetWindow(QWidget):
             return f"image:{_canon_path(self.cfg['image_path'])}"
         if c in CHARACTERS:
             return f"pixel:{c}"
+        if c == "whale":
+            return "sprite:whale"
         return None
 
     def _get_model_memory(self, key=None):
@@ -594,7 +597,15 @@ class PetWindow(QWidget):
         config.save(self.cfg)
 
     def _build_renderer(self):
+        self._renderer_epoch = getattr(self, "_renderer_epoch", 0) + 1
         old = self.renderer
+        if isinstance(old, WhalePet) or self.cfg.get("character") == "whale":
+            # 换入/换出精灵角色时不能把上一只的下落任务带到新窗口。
+            if hasattr(self, "_fall_timer"):
+                self._fall_timer.stop()
+            if hasattr(self, "_drag_move_timer"):
+                self._drag_move_timer.stop()
+            self._drag_off = self._drag_candidate_off = None
         if old is not None:
             try:
                 clear = getattr(old, "clear_frame", None)
@@ -615,11 +626,10 @@ class PetWindow(QWidget):
                 pass
             try:
                 old.deleteLater()
-                QApplication.sendPostedEvents(None, 0)
+                QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
             except Exception:
                 pass
             self.renderer = None
-            gc.collect()
 
         # 切换模型时隐藏并清除旧气泡，避免显示上一个模型的内容
         if hasattr(self, '_chat_bubble') and self._chat_bubble:
@@ -655,9 +665,12 @@ class PetWindow(QWidget):
                                                   size,
                                                   v["zoom"], v["xoff"], v["yoff"], self,
                                                   ratio=v["ratio"],
-                                                  canvas_scale=v["canvas_scale"])
+                                                  canvas_scale=v["canvas_scale"],
+                                                  texture_limit=self.cfg.get("live2d_texture_limit", 2048))
                 self.renderer.set_follow(self.cfg.get("follow", True))
-                self.renderer.on_error = self._on_live2d_render_error
+                epoch = self._renderer_epoch
+                self.renderer.on_error = lambda path, err, epoch=epoch: (
+                    epoch == self._renderer_epoch and self._on_live2d_render_error(path, err))
                 self.renderer.on_resized = self._fit_window_to_renderer
                 self.renderer.on_voice_with_text = self._on_voice_with_text
                 self.renderer.set_auto_expression(
@@ -670,6 +683,19 @@ class PetWindow(QWidget):
                 self._apply_disabled_motions()
             except Exception as e:  # noqa: BLE001
                 QMessageBox.warning(self, "Live2D 不可用", str(e))
+                self.cfg["character"] = "slime"
+                config.save(self.cfg)
+        elif name == "whale":
+            try:
+                size = self._get_model_memory().get("size") or self.cfg["whale_size"]
+                self.cfg["whale_size"] = int(size)
+                self.renderer = WhalePet(size, self.cfg["whale_facing"],
+                                         self.cfg["whale_auto_actions"], self)
+                self._whale_walk_fraction = 0.0
+                self.renderer.walk_step.connect(self._whale_walk_step)
+                self.renderer.content_changed.connect(self._whale_content_changed)
+            except Exception as e:
+                QMessageBox.warning(self, "鲸鱼娘不可用", str(e))
                 self.cfg["character"] = "slime"
                 config.save(self.cfg)
         elif name == "image":
@@ -724,21 +750,23 @@ class PetWindow(QWidget):
 
         self.renderer.update()
         self.update()
-        self.repaint()
-        QApplication.processEvents()
 
         # 延迟同步，确保正确显示
         QTimer.singleShot(0, self._sync_input_mask)
-        QTimer.singleShot(50, lambda: (self.renderer.update(), self.update(), self.repaint()))
+        self._after_renderer(50, lambda: (self.renderer.update(), self.update()))
         QTimer.singleShot(100, self._sync_input_mask)
         QTimer.singleShot(240, self._sync_input_mask)
         # Live2D/OpenGL 首帧加载阶段可能还没把透明 alpha 写稳；稍后再同步窗口形状，
         # 避免 Windows 合成层缓存到黑色矩形或裁剪遮罩脏帧。
-        QTimer.singleShot(900, self._refresh_live2d_alpha_mask)
-        QTimer.singleShot(1800, self._refresh_live2d_alpha_mask)
-        QTimer.singleShot(3200, self._refresh_live2d_alpha_mask)
+        self._after_renderer(900, self._refresh_live2d_alpha_mask)
+        self._after_renderer(1800, self._refresh_live2d_alpha_mask)
+        self._after_renderer(3200, self._refresh_live2d_alpha_mask)
         self._schedule_workarea_enforcement()
         self._schedule_layer_sync()
+
+    def _after_renderer(self, delay, callback):
+        epoch = self._renderer_epoch
+        QTimer.singleShot(delay, lambda: epoch == self._renderer_epoch and callback())
 
     def _warm_petting_assets(self):
         """提前构建摸头资源，避免第一次点击时才创建导致一闪而过的首帧脏画面。"""
@@ -796,6 +824,11 @@ class PetWindow(QWidget):
     def eventFilter(self, obj, ev):
         if obj is self.renderer:
             t = ev.type()
+            if (isinstance(self.renderer, WhalePet) and t == QEvent.MouseButtonDblClick
+                    and ev.button() == Qt.LeftButton):
+                self._drag_candidate_off = None
+                self._play_whale_state("EATING")
+                return True
             if t == QEvent.MouseButtonPress and ev.button() == Qt.LeftButton:
                 if not self._point_hits_visible_content(ev.pos().x(), ev.pos().y()):
                     self._clear_head_cursor()
@@ -895,7 +928,11 @@ class PetWindow(QWidget):
                     if moved:
                         self._play_drag_release_reaction()
                     elif click_action_enabled:
-                        self._play_configured_click_action()
+                        if (isinstance(self.renderer, WhalePet)
+                                and self.renderer.hit_region(ev.pos().x(), ev.pos().y()) == "tail"):
+                            self.renderer.react("tail")
+                        else:
+                            self._play_configured_click_action()
                     if self.cfg.get("nurture_mode", False):
                         # 养成模式：戳身体/陪玩加分并气泡提示收益（取代通用点击语录，避免双气泡）
                         self._nurture_quiet_action("drag_play" if moved else "body_poke")
@@ -919,7 +956,8 @@ class PetWindow(QWidget):
                 if self._edge is not None:
                     self._undock()                  # 被拖离边缘，解除吸附
 
-                if isinstance(self.renderer, ImagePet) and self.cfg.get("gravity", True):
+                if (isinstance(self.renderer, ImagePet)
+                        or (isinstance(self.renderer, WhalePet) and moved)) and self.cfg.get("gravity", True):
                     self._start_fall()
                 else:
                     self._save_pos()
@@ -987,6 +1025,8 @@ class PetWindow(QWidget):
     def _in_head_region(self, click_x, click_y):
         """窗口内坐标 (click_x, click_y) 是否落在"头部摸头范围"：
         模型顶部偏上的较小区域，尽量只覆盖头顶，不吃到额头以下。"""
+        if isinstance(self.renderer, WhalePet):
+            return self.renderer.hit_region(click_x, click_y) == "head"
         if self.cfg.get("character") == "live2d":
             try:
                 hit_test = getattr(self.renderer, "hit_test", None)
@@ -1070,6 +1110,8 @@ class PetWindow(QWidget):
     def _do_head_pat(self):
         """执行一次摸头：只播放覆盖在头顶的手势动画，宠物本体不跟着晃。"""
         self._start_petting_overlay()
+        if isinstance(self.renderer, WhalePet):
+            self.renderer.react("touch_head")
         subtitle = None
         # 养成模式：记好感、按层级反馈（高优先级气泡，盖过间隔语录）
         if self.cfg.get("nurture_mode", False):
@@ -1670,9 +1712,19 @@ class PetWindow(QWidget):
         return action
 
     def _populate_menu(self, m):
+        # 只放入口，不扫描程序、不提取 exe 图标；面板/子菜单真正打开时再导入模块。
+        self._add_menu_section(m, "效率工具")
+        m.addAction("快捷启动与搜索…").triggered.connect(self._show_quick_panel)
+        quick_menu = m.addMenu("快速启动")
+        quick_menu.aboutToShow.connect(lambda menu=quick_menu: self._fill_quick_launch_menu(menu))
+        m.addSeparator()
         # ──── 形象切换 ────
         self._add_menu_section(m, "形象")
         char_menu = m.addMenu("切换形象")
+        a = char_menu.addAction("鲸鱼娘 · 大肥鱼（完整动作）")
+        a.setCheckable(True)
+        a.setChecked(self.cfg["character"] == "whale")
+        a.triggered.connect(lambda _=False: self._set_character("whale"))
         for key, label in PIXEL_CHARS:
             a = char_menu.addAction(label)
             a.setCheckable(True)
@@ -1696,13 +1748,29 @@ class PetWindow(QWidget):
 
         self._add_menu_section(m, "显示")
         size_menu = m.addMenu("大小")
-        if self.cfg["character"] == "image":
+        if self.cfg["character"] == "whale":
+            for hpx in sorted(set(IMAGE_SIZES + [240])):
+                a = size_menu.addAction(f"{hpx}px")
+                a.setCheckable(True)
+                a.setChecked(self.cfg["whale_size"] == hpx)
+                a.triggered.connect(lambda _=False, h=hpx: self._set_whale_size(h))
+        elif self.cfg["character"] == "image":
             for hpx in IMAGE_SIZES:
                 a = size_menu.addAction(f"{hpx}px")
                 a.setCheckable(True)
                 a.setChecked(self.cfg["image_size"] == hpx)
                 a.triggered.connect(lambda _=False, hh=hpx: self._set_image_size(hh))
         elif self.cfg["character"] == "live2d":
+            quality = m.addMenu("Live2D 画质与内存")
+            if getattr(self.renderer, '_prepare_warning', ''):
+                quality.addAction("缓存未生效：当前使用原始贴图").setEnabled(False)
+            for cap, label in ((2048, "均衡：2048（缓存副本，省内存）"),
+                               (4096, "高清：4096（缓存副本）"),
+                               (0, "原始画质（大模型占用较高）")):
+                a = quality.addAction(label)
+                a.setCheckable(True)
+                a.setChecked(self.cfg.get("live2d_texture_limit", 2048) == cap)
+                a.triggered.connect(lambda _=False, limit=cap: self._set_texture_limit(limit))
             for spx in LIVE2D_SIZES:
                 a = size_menu.addAction(f"{spx}px")
                 a.setCheckable(True)
@@ -1716,7 +1784,7 @@ class PetWindow(QWidget):
                 a.triggered.connect(lambda _=False, sc=s: self._set_scale(sc))
 
         # ──── 画风（仅像素角色）────
-        if self.cfg["character"] not in ("image", "live2d"):
+        if self.cfg["character"] in CHARACTERS:
             style_menu = m.addMenu("画风（史莱姆/小猫）")
             for key, label in (("pixel", "像素"), ("smooth", "平滑（非像素）")):
                 a = style_menu.addAction(label)
@@ -1727,6 +1795,8 @@ class PetWindow(QWidget):
         m.addSeparator()
 
         self._add_menu_section(m, "互动")
+        if isinstance(self.renderer, WhalePet):
+            self._populate_whale_menu(m)
         if self.cfg["character"] == "live2d":
             a = m.addAction("看向鼠标")
             a.setCheckable(True)
@@ -2262,8 +2332,58 @@ class PetWindow(QWidget):
         self._populate_menu(m)
         m.exec(global_pos)
 
+    def _fill_quick_launch_menu(self, menu):
+        from quick_actions import normalize_entries
+        menu.clear()
+        entries = normalize_entries(self.cfg.get("quick_launch_items"))
+        for entry in entries[:8]:
+            action = menu.addAction(entry['name'].replace('&', '&&'))
+            action.setToolTip(entry['path'])
+            action.triggered.connect(lambda _=False, e=entry: self._launch_quick_entry(e))
+        if not entries:
+            menu.addAction("尚未添加收藏").setEnabled(False)
+        menu.addSeparator()
+        menu.addAction("全部项目 / 添加与管理…").triggered.connect(self._show_quick_panel)
+
+    def _launch_quick_entry(self, entry):
+        from quick_actions import launch_entry
+        try:
+            if not launch_entry(entry):
+                raise OSError("系统未能打开这个项目，请检查默认应用或程序路径。")
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "无法快捷启动", str(error))
+
+    def _show_quick_panel(self, _checked=False):
+        from quick_actions import QuickPanel
+        panel = getattr(self, '_quick_panel', None)
+        if panel is not None:
+            panel.show()
+            panel.raise_()
+            panel.activateWindow()
+            panel._focus_search()
+            return
+        panel = QuickPanel(self.cfg, self)
+        self._quick_panel = panel
+        token = object()
+        self._quick_panel_token = token
+        def clear_panel():
+            if self._quick_panel_token is token:
+                self._quick_panel = None
+        panel.destroyed.connect(clear_panel)
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            panel.resize(min(620, area.width() - 24), min(530, area.height() - 24))
+            panel.move(area.x() + (area.width() - panel.width()) // 2,
+                       area.y() + (area.height() - panel.height()) // 2)
+        panel.show()
+        panel.raise_()
+        panel.activateWindow()
+
     def _tray_icon(self):
         c = self.cfg["character"]
+        if c == "whale" and isinstance(self.renderer, WhalePet):
+            return QIcon(self.renderer._frame)
         if c == "image" and self.cfg["image_path"]:
             pm = QPixmap(self.cfg["image_path"])
             if not pm.isNull():
@@ -2306,7 +2426,7 @@ class PetWindow(QWidget):
     #  菜单动作
     # ------------------------------------------------------------------ #
     def _set_character(self, key):
-        """切换角色：显示加载提示，异步加载模型避免卡顿。"""
+        """合并同一事件循环里的连续选择；延后执行不等于后台原生模型加载。"""
         self.cfg["character"] = key
         config.save(self.cfg)
 
@@ -2314,8 +2434,11 @@ class PetWindow(QWidget):
         if hasattr(self, '_chat_bubble') and self._chat_bubble:
             self._chat_bubble.show_message("加载中...⏳", duration=5000)
 
-        # 异步加载避免UI卡顿
-        QTimer.singleShot(0, self._do_rebuild_and_restore)
+        if not hasattr(self, "_switch_timer"):
+            self._switch_timer = QTimer(self)
+            self._switch_timer.setSingleShot(True)
+            self._switch_timer.timeout.connect(self._do_rebuild_and_restore)
+        self._switch_timer.start(0)
 
     def _do_rebuild_and_restore(self):
         """真正执行重建和恢复（延迟执行避免UI卡顿）。"""
@@ -2327,7 +2450,7 @@ class PetWindow(QWidget):
 
         # 加载完成后显示欢迎消息（之前误传 "greeting_morning"，会把这串原文显示出来）
         if hasattr(self, '_chat_manager') and self._chat_manager:
-            QTimer.singleShot(500, lambda: self._chat_manager.say("你好呀，我换了个新形象~"))
+            self._after_renderer(500, lambda: self._chat_manager.say("你好呀，我换了个新形象~"))
 
     def _set_scale(self, scale):
         self.cfg["scale"] = scale
@@ -2612,6 +2735,87 @@ class PetWindow(QWidget):
             # 按当前图片宠物记住尺寸
             self._save_model_memory(size=h)
 
+    def _populate_whale_menu(self, menu):
+        actions = menu.addMenu("鲸鱼娘动作（全部）")
+        for key, label in WHALE_ACTIONS.items():
+            if key == "WALKING":
+                continue
+            actions.addAction(label).triggered.connect(
+                lambda _=False, state=key: self._play_whale_state(state))
+        for facing, label in ((-1, "向左走"), (1, "向右走")):
+            actions.addAction(label).triggered.connect(
+                lambda _=False, direction=facing: self._play_whale_state("WALKING", direction))
+        extra = actions.addMenu("过渡动作与其他视角")
+        for key, label in WHALE_EXTRAS.items():
+            extra.addAction(label).triggered.connect(
+                lambda _=False, asset=key: self._play_whale_asset(asset))
+        a = menu.addAction("自动日常动作")
+        a.setCheckable(True)
+        a.setChecked(self.cfg["whale_auto_actions"])
+        a.triggered.connect(self._toggle_whale_auto)
+        a = menu.addAction("重力掉落")
+        a.setCheckable(True)
+        a.setChecked(self.cfg.get("gravity", True))
+        a.triggered.connect(self._toggle_gravity)
+
+    def _play_whale_state(self, state, facing=None):
+        if not isinstance(self.renderer, WhalePet):
+            return
+        self._cancel_pending_switch_dock()
+        if self._drag_off is not None or self._fall_timer.isActive():
+            return
+        if facing is not None:
+            self.cfg["whale_facing"] = facing
+            self.renderer.set_facing(facing)
+            self._whale_walk_fraction = 0.0
+            config.save(self.cfg)
+        self.renderer.play_state(state)
+
+    def _play_whale_asset(self, asset):
+        if isinstance(self.renderer, WhalePet):
+            self._cancel_pending_switch_dock()
+            self.renderer.play_asset(asset)
+
+    def _toggle_whale_auto(self, enabled):
+        self.cfg["whale_auto_actions"] = bool(enabled)
+        config.save(self.cfg)
+        if isinstance(self.renderer, WhalePet):
+            self.renderer.set_auto_actions(enabled)
+
+    def _set_whale_size(self, height):
+        if not isinstance(self.renderer, WhalePet):
+            return
+        self.cfg["whale_size"] = int(height)
+        self.renderer.set_image_size(height)
+        self._resize_keep_anchor(self.renderer.natural_size())
+        self._save_model_memory(size=int(height))
+        self._schedule_workarea_enforcement()
+
+    def _whale_content_changed(self):
+        if isinstance(self.renderer, WhalePet):
+            self._input_mask_rect_cache = None
+            self._sync_input_mask()
+
+    def _whale_walk_step(self, dx):
+        if not isinstance(self.renderer, WhalePet):
+            return
+        # 复用主窗口的工作区约束；不另起一套会与拖拽/贴边打架的移动计时器。
+        if (self._drag_off is not None or self._drag_candidate_off is not None
+                or self._fall_timer.isActive() or self._edge is not None
+                or not self.isVisible()):
+            return
+        self._whale_walk_fraction += dx
+        step = int(self._whale_walk_fraction)
+        if not step:
+            return
+        self._whale_walk_fraction -= step
+        x, y = self._clamp_pos(self.x() + step, self.y())
+        if x == self.x():
+            self.renderer.set_facing(-self.renderer.facing)
+            self._whale_walk_fraction = 0.0
+        else:
+            self.move(x, y)
+
     def _toggle_facing(self, checked):
         self.cfg["facing"] = -1 if checked else 1
         config.save(self.cfg)
@@ -2634,6 +2838,9 @@ class PetWindow(QWidget):
         """按“点击宠物时”设置触发动作；像素/图片不再走各自随机默认点击反应。"""
         if self.cfg.get("nurture_mode", False) or not self.cfg.get("click_action_enabled", True):
             return False
+        if isinstance(self.renderer, WhalePet):
+            self.renderer.react("click")
+            return True
         if self.cfg.get("character") == "live2d":
             if hasattr(self.renderer, "react"):
                 try:
@@ -2793,8 +3000,12 @@ class PetWindow(QWidget):
         self._floor = self._clamp_y(10**9)
         self._landed = False
         if self.y() >= self._floor:
+            if isinstance(self.renderer, WhalePet):
+                self.renderer.react("land")
             self._save_pos()
             return
+        if isinstance(self.renderer, WhalePet):
+            self.renderer.react("fall")
         self._fall_vy = 0.0
         self._fall_timer.start(16)
 
@@ -2895,7 +3106,7 @@ class PetWindow(QWidget):
                 return
             rect = self._visible_content_rect()
             self._input_mask_rect_cache = QRect(rect)
-            if self.cfg.get("character") == "live2d":
+            if self.cfg.get("character") in ("live2d", "whale"):
                 # Windows 的 QWidget.setMask 会同时裁剪输入和显示区域。
                 # Live2D 动作会伸出静止姿态的内容矩形，继续套 mask 会把手臂等动作画面切掉；
                 # 输入穿透改在 nativeEvent 的 WM_NCHITTEST 里做，只影响鼠标命中，不裁视觉。
@@ -3999,6 +4210,8 @@ class PetWindow(QWidget):
         """某个 Live2D 模型渲染崩了：安全切回像素宠物并提示。"""
         if self.cfg.get("character") != "live2d":
             return
+        if _canon_path(path) != _canon_path(self.cfg.get("live2d_model", "")):
+            return
         self.cfg["character"] = "slime"
         config.save(self.cfg)
         self._switch_character_fast("slime")
@@ -4009,6 +4222,8 @@ class PetWindow(QWidget):
 
     def _switch_character_fast(self, character, model_path=None):
         """尽量原地切换形象，减少重建卡顿。"""
+        if hasattr(self, "_switch_timer"):
+            self._switch_timer.stop()
         if character == "live2d" and model_path:
             state = self._resolve_live2d_state(model_path)
             self.cfg["live2d_model"] = model_path
@@ -4025,11 +4240,21 @@ class PetWindow(QWidget):
                                 v["yoff"], v["ratio"], size=s)  # 内部已 config.save
             # 同时保存到新的 model_memory 结构里
             self._save_model_memory(size=s)
-            # 尺寸变化改走完整重建路径，和“重启后正常”的冷启动保持一致，
-            # 彻底规避运行中热改尺寸残留旧 FBO/旧模型状态的问题。
-            self._rebuild_and_restore_pos()
+            # 只更新画布/FBO，不重新解码 8K 贴图；显示层会丢弃旧尺寸及过渡帧。
+            self.renderer.set_live2d_size(s)
+            self._resize_keep_anchor(self.renderer.natural_size())
+            self._schedule_workarea_enforcement()
+            self._after_renderer(160, self._refresh_live2d_alpha_mask)
         else:
             config.save(self.cfg)
+
+    def _set_texture_limit(self, limit):
+        if limit not in (0, 2048, 4096):
+            return
+        self.cfg["live2d_texture_limit"] = limit
+        config.save(self.cfg)
+        if self.cfg.get("character") == "live2d":
+            self._set_character("live2d")
 
     def _toggle_top(self, checked):
         self.cfg["always_on_top"] = bool(checked)
@@ -5130,7 +5355,8 @@ class Live2DPicker(QDialog):
             preview_size = 220
             pv = create_live2d_pet(path, preview_size, self._zoom, self._xoff, self._yoff,
                                    self.preview_view, ratio=self._ratio, preview_mode=True,
-                                   canvas_scale=self._canvas_scale)
+                                   canvas_scale=self._canvas_scale,
+                                   texture_limit=getattr(self.parent(), 'cfg', {}).get("live2d_texture_limit", 2048))
             pv.set_follow(False)
             pv.on_error = lambda *a, _pv=pv: self._preview_failed(_pv)
             pv.on_resized = lambda *a, _pv=pv: self._fit_preview(_pv)

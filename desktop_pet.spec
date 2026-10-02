@@ -23,6 +23,8 @@ hiddenimports += collect_submodules("send2trash")
 
 # 添加语音翻译数据库
 datas += [('voice_translations.json', '.')]
+# 鲸鱼娘是独立精灵资源，不写入或搬动用户的 live2d 模型目录。
+datas += [('assets/whale', 'assets/whale')]
 hiddenimports += [
     "live2d.v2", "live2d.v2cpp", "live2d.v3", "live2d_pet", "image_pet",
     "pixel_pet", "config", "system", "OpenGL", "OpenGL.GL", "numpy",
@@ -63,7 +65,9 @@ a = Analysis(
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
-    runtime_hooks=[],
+    # 仅诊断构建使用测试钩子；常规 build_exe.bat 不会打入此文件。
+    runtime_hooks=(["tests/frozen_diagnostics_hook.py"]
+                   if _os.environ.get("DESKTOP_PET_BUILD_DIAGNOSTICS") == "1" else []),
     excludes=[
         # 本程序只用到 QtCore/QtGui/QtWidgets/QtOpenGLWidgets/QtTextToSpeech，
         # 其余 Qt 大模块整体排除，显著减小打包体积（每个都会带一个几 MB 的 DLL）。
@@ -115,6 +119,11 @@ def _qt_keep(dest):
             return False
     # 明确丢弃的大块 Qt DLL（按文件名前缀匹配，连带 *QmlModels/*QuickWidgets 等）
     base = d.rsplit("/", 1)[-1]
+    # Qt 6.11 在 Windows 使用系统 ICU 无版本名 API；PATH 里的 Poppler/Conda
+    # 也可能带同名 icuuc.dll，但导出的是 ucnv_*_78 等版本化符号。
+    # 将它放进 _internal 会遮住 System32 的 DLL，导致 QtWidgets 无法导入。
+    if _os.name == "nt" and base == "icuuc.dll":
+        return False
     drop_dll = (
         "qt6quick", "qt6qml", "qt6pdf", "qt6virtualkeyboard", "qt6svg",
         "qt6sql", "qt6test", "qt6websockets", "qt6charts",
