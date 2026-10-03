@@ -26,7 +26,8 @@ def run_case(executable, model=None):
                    live2d_model=str(model) if model else '',
                    models_dir=str(models), nurture_mode=True,
                    chat_enabled=False, tts_enabled=False, voice_enabled=False,
-                   holiday_greetings=False, edge_snap=False)
+                   holiday_greetings=False, edge_snap=False,
+                   hotkey_toggle_pet='', hotkey_quick_panel='')
         config_path = profile / 'config.json'
         config_path.write_text(json.dumps(cfg, ensure_ascii=False), encoding='utf-8')
         env = os.environ.copy()
@@ -34,6 +35,9 @@ def run_case(executable, model=None):
                    APPDATA=str(home / 'AppData'), LOCALAPPDATA=str(home / 'LocalAppData'))
         env.pop('DESKTOP_PET_BUILD_DIAGNOSTICS', None)
         env.pop('DESKTOP_PET_DIAGNOSTIC_LOG', None)
+        # 不借用开发环境 PATH 中的 Conda DLL，才能发现遗漏的 _ctypes/ffi 等依赖。
+        windows = os.environ['SystemRoot']  # os.environ 在 Windows 下大小写不敏感，普通 dict 则不是。
+        env['PATH'] = os.pathsep.join((str(Path(windows) / 'System32'), windows))
         startup = subprocess.STARTUPINFO()
         startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         startup.wShowWindow = 0
@@ -82,4 +86,3 @@ def run():
 
 if __name__ == '__main__':
     run()
-

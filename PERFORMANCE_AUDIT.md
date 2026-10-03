@@ -252,3 +252,22 @@ L2DZero 原图样本仍驻留约 710 MB 进程私有内存，未通过切到低�
   清理后使用保留的 Pio 和未清理的 L2DZero 测试，162 个文件哈希与 mtime 保持不变。
 - 测试进程和临时配置 / 缓存 / QA 图片均已结束或清理；配置备份及去重清单有意保留以便恢复。
 - 本轮交付源码，不重打包现有 exe；未做全模型 / 全显卡性能矩阵或硬件按键端到端延迟测试。
+
+## 第六阶段：正式 exe 打包验证（2026-10-03）
+
+- 执行 `cmd /c build_exe.bat`，发布 `dist/DesktopPet/DesktopPet.exe` 与 `_internal`；
+  最终 exe 更新时间 2026-10-03 11:22:07，大小 5,777,024 字节。
+- 首次构建在去掉开发环境 PATH 后退出。检查 `_ctypes.pyd` 的 PE 导入表确认依赖 `ffi.dll`，
+  运行中的 Python 实际从 Conda `Library/bin` 加载该 DLL；仅补入此 DLL 后，相同隔离启动测试通过。
+- `desktop_pet.spec` 现收集构建解释器实际加载的 `ffi.dll`，不是依赖机器上的 PATH 或手工补包。
+  修改后重新完整构建，最终包 DLL 哈希与构建解释器使用的 DLL 一致。
+- `tests/frozen_smoke.py` 固定使用隔离用户配置和仅 Windows 系统目录的 PATH，禁用测试全局快捷键。
+  正式 exe 分别启动鲸鱼娘、Pio（Cubism 2）、L2DZero（Cubism 3）、当前使用的 Bronya；
+  四例均观测到 4.2 秒延迟业务回调，继续运行约 3 秒，无闪退或角色回退（总计每例约 8 秒）。
+- 核对 exe 内含本次预览 / 自定义快捷键代码及 quick_actions、live2d_assets；
+  `_internal/python312.dll`、`base_library.zip`、`send2trash`、`ffi.dll` 完整，无诊断钩子和冲突 ICU DLL。
+- 72 个鲸鱼娘资源文件与源码哈希一致；两处模型库共 5,726 个文件 / 目录条目的大小与 mtime
+  以及模型库根目录 mtime 在构建前后完全一致。
+- `build`、`dist_build`、`_internal_old`、`_internal_new`、`DesktopPet.exe.new` 已清理；测试进程与临时配置已清理。
+- exe SHA-256：`b5fc6127f67284444351168640b661f35a3b65e0e53d0c9c9da24df7f3924f03`。
+- 这是本机正式包启动验证，不代表所有 Windows / 显卡组合认证；打包后的全部交互未重复做端到端测试。

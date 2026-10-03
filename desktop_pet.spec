@@ -6,8 +6,24 @@
 说明：  build_exe.bat 只更新 dist/DesktopPet/_internal 和 DesktopPet.exe；模型目录由用户维护。
 """
 from PyInstaller.utils.hooks import collect_all, collect_submodules
+import os as _os
 
 datas, binaries, hiddenimports = [], [], []
+# Conda 派生的 venv 中，_ctypes.pyd 依赖 Library/bin/ffi.dll，但该目录不一定
+# 在 PyInstaller 的依赖搜索路径。只收集当前解释器实际加载的 DLL，避免混入别的版本。
+if _os.name == "nt":
+    import ctypes as _ctypes
+    _kernel = _ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel.GetModuleHandleW.argtypes = [_ctypes.c_wchar_p]
+    _kernel.GetModuleHandleW.restype = _ctypes.c_void_p
+    _kernel.GetModuleFileNameW.argtypes = [_ctypes.c_void_p, _ctypes.c_wchar_p, _ctypes.c_ulong]
+    _kernel.GetModuleFileNameW.restype = _ctypes.c_ulong
+    _ffi_handle = _kernel.GetModuleHandleW("ffi.dll")
+    if _ffi_handle:
+        _ffi_path = _ctypes.create_unicode_buffer(32768)
+        if not _kernel.GetModuleFileNameW(_ffi_handle, _ffi_path, len(_ffi_path)):
+            raise _ctypes.WinError(_ctypes.get_last_error())
+        binaries += [(_ffi_path.value, ".")]
 # live2d-py 带原生 DLL / .pyd（Cubism Core），必须整体收集
 _d, _b, _h = collect_all("live2d")
 datas += _d
@@ -45,7 +61,6 @@ hiddenimports += [
 # QtTextToSpeech 随 PySide6 提供，但 PyInstaller 默认会漏掉它的运行时语音插件
 # （Qt 在运行时按需加载 plugins/texttospeech/*.dll，不是链接依赖）。这里显式收集
 # 模块 DLL + 全部 texttospeech 插件，确保打包后的 exe 也能朗读气泡文字。
-import os as _os
 import PySide6 as _pyside6
 _ps_root = _os.path.dirname(_pyside6.__file__)
 _tts_dll = _os.path.join(_ps_root, "Qt6TextToSpeech.dll")
