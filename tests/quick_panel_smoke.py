@@ -21,7 +21,8 @@ def run():
         cfg = copy.deepcopy(config.DEFAULTS)
         (home / 'models').mkdir()
         cfg.update(character='whale', whale_auto_actions=False, models_dir=str(home / 'models'),
-                   chat_enabled=False, voice_enabled=False, tts_enabled=False, holiday_greetings=False)
+                   chat_enabled=False, voice_enabled=False, tts_enabled=False, holiday_greetings=False,
+                   hotkey_toggle_pet='', hotkey_quick_panel='')
         config.save(cfg)
         from PySide6.QtCore import Qt, QCoreApplication, QEvent, QTimer
         from PySide6.QtWidgets import QApplication, QMenu
@@ -48,6 +49,69 @@ def run():
             win._populate_menu(menu)
             actions = menu.actions()
             entry = next(a for a in actions if a.text() == '快捷启动与搜索…')
+            # 实际打开设置弹窗，保存后使用真实线程 WM_HOTKEY，不向用户桌面发送按键。
+            from PySide6.QtGui import QKeySequence
+            from PySide6.QtWidgets import QKeySequenceEdit, QDialogButtonBox
+            import ctypes
+            from ctypes import wintypes
+            def configure_hotkeys():
+                dialog = app.activeModalWidget()
+                try:
+                    dialog.findChild(QKeySequenceEdit, 'hotkey_toggle_pet').setKeySequence(QKeySequence('Ctrl+Alt+Shift+F7'))
+                    dialog.findChild(QKeySequenceEdit, 'hotkey_quick_panel').setKeySequence(QKeySequence('Ctrl+Alt+Shift+F8'))
+                    output = os.environ.get('HOTKEY_QA_IMAGE')
+                    if output:
+                        assert dialog.grab().save(output)
+                    dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.Save).click()
+                    assert not dialog.isVisible(), '快捷键设置没有成功保存'
+                except Exception as error:
+                    errors.append(str(error))
+                    dialog.reject()
+            QTimer.singleShot(50, configure_hotkeys)
+            win._show_hotkey_settings()
+            settle()
+            assert config.load()['hotkey_quick_panel'] == 'Ctrl+Alt+Shift+F8'
+            user32 = ctypes.WinDLL('user32', use_last_error=True)
+            user32.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+            saved = config.load()
+            def capture_and_cancel():
+                dialog = app.activeModalWidget()
+                try:
+                    editor = dialog.findChild(QKeySequenceEdit, 'hotkey_quick_panel')
+                    editor.setFocus()
+                    QTest.qWait(10)
+                    identifier = next(i for i, a in win._hotkeys._actions.items() if a == 'hotkey_toggle_pet')
+                    assert user32.PostThreadMessageW(ctypes.windll.kernel32.GetCurrentThreadId(), 0x0312, identifier, 0)
+                    QTest.qWait(30)
+                    assert editor.keySequence().toString(QKeySequence.PortableText) == 'Ctrl+Alt+Shift+F7'
+                    dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.Save).click()
+                    assert dialog.isVisible(), '重复按键不应保存成功'
+                    assert config.load() == saved
+                except Exception as error:
+                    errors.append(str(error))
+                finally:
+                    dialog.reject()
+            QTimer.singleShot(50, capture_and_cancel)
+            win._show_hotkey_settings()
+            settle()
+            def hotkey(action):
+                identifier = next(i for i, a in win._hotkeys._actions.items() if a == action)
+                assert user32.PostThreadMessageW(ctypes.windll.kernel32.GetCurrentThreadId(), 0x0312, identifier, 0)
+                settle(80)
+            hotkey('hotkey_toggle_pet')
+            assert not win.isVisible()
+            hotkey('hotkey_quick_panel')
+            assert win._quick_panel.isVisible()
+            win._quick_panel.close()
+            settle()
+            hotkey('hotkey_toggle_pet')
+            assert win.isVisible()
+            win._toggle_top(True)
+            win._toggle_top(False)
+            hotkey('hotkey_quick_panel')
+            assert win._quick_panel.isVisible()
+            win._quick_panel.close()
+            settle()
             quick_menu = next(a.menu() for a in actions if a.text() == '快速启动')
             win._fill_quick_launch_menu(quick_menu)
             assert len(quick_menu.actions()) == 5
@@ -133,6 +197,7 @@ def run():
             panel.close()
             settle()
             print('QUICK_SMOKE=' + json.dumps({'status': 'passed', 'real_lnk_launch': True,
+                'custom_hotkey_dialog_and_native_dispatch': True,
                 'keyboard_web_handoff': True, 'open_ms': timings, 'baseline_private_mb': baseline,
                 'closed_private_mb': memory, 'residual_panels': len(win.findChildren(QuickPanel))}), flush=True)
         finally:

@@ -30,7 +30,8 @@ def run():
         cfg = copy.deepcopy(config.DEFAULTS)
         cfg.update(character='whale', chat_enabled=False, voice_enabled=False,
                    tts_enabled=False, models_dir=str(models), whale_auto_actions=False,
-                   edge_snap=False, holiday_greetings=False)
+                   edge_snap=False, holiday_greetings=False,
+                   hotkey_toggle_pet='', hotkey_quick_panel='')
         config.save(cfg)
         from PySide6.QtCore import Qt, QTimer, QCoreApplication, QEvent
         from PySide6.QtGui import QSurfaceFormat, QImage, QPainter, QColor

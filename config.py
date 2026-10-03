@@ -17,6 +17,8 @@ DEFAULTS = {
     "always_on_top": False,    # 是否总在最前
     "avoid_taskbar": True,      # 不让宠物窗口盖住任务栏（把窗口限制在屏幕工作区内）
     "click_through": False,    # 鼠标穿透（开启后无法拖动）
+    "hotkey_toggle_pet": "Ctrl+Alt+P",  # 全局显示/隐藏；空字符串表示禁用
+    "hotkey_quick_panel": "Ctrl+Alt+Space",  # 全局打开快捷启动与搜索
     "pos": None,               # 上次位置 [x, y]（兼容旧配置；现按模型存于 model_memory）
     "edge_snap": True,         # 贴边自动隐藏：拖到屏幕左/右/上边缘自动缩回，鼠标移近再划出
     "edge_side": "",           # 当前吸附的边："" | "left" | "right" | "top"
@@ -30,6 +32,7 @@ DEFAULTS = {
     "live2d_model": "",        # Live2D 模型设置文件路径（Cubism2: model.json/*.model.json，Cubism3: *.model3.json）
     "live2d_size": 300,        # Live2D 窗口边长(px)
     "live2d_texture_limit": 2048, # 纹理长边缓存档位：2048 均衡 / 4096 高清 / 0 原图；不改模型源文件
+    "live2d_preview_texture_limit": 1024, # 管理界面独立预览档位，不影响桌面画质
     "live2d_zoom": 1.0,        # 旧版全局缩放（保留以兼容旧配置；现按模型存于 live2d_views）
     "live2d_yoff": 0.0,        # 旧版全局竖直偏移（同上）
     "live2d_views": {},        # 按模型构图：{模型路径: {"zoom":float,"xoff":float,"yoff":float,"ratio":float,"canvas_scale":float}}

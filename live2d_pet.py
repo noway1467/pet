@@ -20,7 +20,7 @@ import gc
 import importlib
 import importlib.util
 
-from PySide6.QtCore import Qt, QTimer, QSize, QRect
+from PySide6.QtCore import Qt, QTimer, QSize, QRect, Signal
 from PySide6.QtGui import QImage, QRegion, QPainter
 from PySide6.QtWidgets import QWidget
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
@@ -1845,6 +1845,8 @@ class Live2DPet(QWidget):
     凡是会改变离屏画布尺寸的接口，这里都会把自身尺寸同步过去，保证命中坐标一致。
     其余未显式定义的方法/属性通过 __getattr__ 透明转发到离屏渲染器。"""
 
+    first_frame_ready = Signal()
+
     def __init__(self, model_path, size=300, zoom=1.0, xoff=0.0, yoff=0.0,
                  parent=None, ratio=None, preview_mode=False, canvas_scale=1.0,
                  texture_limit=2048):
@@ -1854,6 +1856,8 @@ class Live2DPet(QWidget):
         self.setAutoFillBackground(False)
         self._preview_mode = bool(preview_mode)
         self._shutting_down = False
+        self._render_active = True
+        self._first_frame_emitted = False
         self._frame = None
         self._pending_resize_guard = 0
         self._resize_ready_after = 0.0
@@ -1884,15 +1888,22 @@ class Live2DPet(QWidget):
         # 帧间隔稳定（同离屏 timer）：避免 Windows 粗粒度定时器导致的渲染抖动/掉帧观感。
         self._render_timer.setTimerType(Qt.PreciseTimer)
         self._render_timer.timeout.connect(self._render_tick)
-        self._render_timer.start(int(1000 / max(1, self.fps)))
+        self._render_timer.start(self._frame_interval())
+
+    def _frame_interval(self):
+        # 12fps 是稳定预览的省电档，不应让初始化、FBO 稳定期也逐帧等 83ms。
+        return 16 if self._preview_mode and self._frame is None else int(1000 / max(1, self.fps))
 
     # ---------- 每帧渲染：抓离屏 framebuffer → 重绘 ----------
     def _render_tick(self):
-        if self._shutting_down:
+        # stop() 不能代表持久暂停状态；重显、迟到回调都必须尊重拖动期间的冻结。
+        if self._shutting_down or not self._render_active or not self.isVisible():
             return
         gl = self._gl
         if gl is None:
             return
+        if self._preview_mode and gl.model is None and not gl._texture_future.done():
+            return  # 后台贴图尚未就绪，不做没有模型的 GPU 读回。
         try:
             img = gl.grabFramebuffer()
         except Exception:
@@ -1922,6 +1933,11 @@ class Live2DPet(QWidget):
         self.update()
         if gl._content_box is None:
             gl._content_box = gl._measure_content(img)
+        if self._render_timer.interval() != self._frame_interval():
+            self._render_timer.setInterval(self._frame_interval())
+        if not self._first_frame_emitted:
+            self._first_frame_emitted = True
+            self.first_frame_ready.emit()
 
     def paintEvent(self, _ev):
         if self._frame is None:
@@ -2053,6 +2069,7 @@ class Live2DPet(QWidget):
 
     def reload_model(self, *a, **k):
         self._frame = None
+        self._first_frame_emitted = False
         self._pending_resize_guard = 2
         self._gl.reload_model(*a, **k)
         self._sync_size_from_gl()
@@ -2060,13 +2077,16 @@ class Live2DPet(QWidget):
 
     # ---------- 渲染开关（拖动时暂停以让拖动跟手） ----------
     def set_render_active(self, enabled):
-        if enabled:
+        if self._shutting_down:
+            return
+        self._render_active = bool(enabled)
+        if self._render_active:
             try:
                 self._gl.set_render_active(True)   # 仅复位 _last_t，不会启动离屏定时器
             except Exception:
                 pass
-            if not self._render_timer.isActive():
-                self._render_timer.start(int(1000 / max(1, self.fps)))
+            if self.isVisible() and not self._render_timer.isActive():
+                self._render_timer.start(self._frame_interval())
         else:
             self._render_timer.stop()
 
@@ -2107,8 +2127,9 @@ class Live2DPet(QWidget):
             pass
 
     def showEvent(self, ev):
-        if not self._shutting_down and not self._render_timer.isActive():
-            self._render_timer.start(int(1000 / max(1, self.fps)))
+        if (not self._shutting_down and self._render_active
+                and not self._render_timer.isActive()):
+            self._render_timer.start(self._frame_interval())
         super().showEvent(ev)
 
     def hideEvent(self, ev):

@@ -109,6 +109,26 @@ python main.py
 - 收藏最多 80 项，保存在 `quick_launch_items`；搜索引擎保存在 `quick_search_engine`。旧配置自动使用默认项，用户清空列表不会重新补回。
 - 面板按需创建、关闭释放，不扫描安装目录、不提取 exe 图标、不增加常驻线程或定时器。
 
+### 自定义全局快捷键
+
+右键宠物 / 托盘 → **快捷键设置…**，点击输入框并按下组合键：
+- **显示 / 隐藏宠物**：默认 `Ctrl+Alt+P`。
+- **快捷启动与搜索**：默认 `Ctrl+Alt+Space`；宠物隐藏时也能打开面板并聚焦搜索框。
+- 点击输入框的清除按钮可禁用该动作；「恢复默认组合」后仍需点保存。
+- 保存后立即生效，并记住 `hotkey_toggle_pet`、`hotkey_quick_panel`，旧配置自动补默认值。
+- 支持带 Ctrl / Alt / Win 的单组组合键；支持字母、普通数字、功能键（F12 除外）、空格和导航键。
+  数字小键盘专用组合和连续多组按键不支持。重复、系统保留或其他软件占用会提示，失败不覆盖原有注册及配置。
+- 设置窗口打开时暂停执行全局快捷动作，避免录入时误触；切换置顶 / 穿透不会丢失注册，退出释放。
+
+### Live2D 模型管理预览
+
+- 切换列表的固定等待从 420ms 缩短至 120ms；快速连续选择仍只加载最后一项。
+- 首帧就绪前加快检查，出图后回到省电的 12fps；重复选中当前模型、快速切回未释放的预览无需重载。
+- 右侧 **预览画质** 独立提供「快速 1024」「清晰 2048」「原始贴图」，默认快速档。
+  此选择保存在 `live2d_preview_texture_limit`，**仅影响管理界面，不改变桌面宠物画质或源模型文件**。
+- 新选项尚未出图时禁用「应用」，避免把上一只模型误应用；关闭窗口会释放预览和过期回调。
+- 首次缓存生成、原始贴图解码和原生模型创建仍需时间，不是所有模型都能瞬时打开。
+
 ### Live2D 画质与内存
 
 Live2D 角色右键 → **Live2D 画质与内存**：
@@ -123,11 +143,15 @@ Live2D 角色右键 → **Live2D 画质与内存**：
 缓存准备失败会回退原图，并在画质菜单标明「缓存未生效」。
 
 尺寸调整现在只更新画布，不重复加载整套模型；连续选择会合并，旧模型回调不会作用到新模型。
+拖动时复用最近一帧，只移动窗口；高频鼠标坐标、工作区查询和边界计算一起合并，
+松手按最新坐标落位并恢复动画。暂停期间重显控件不会重新抓帧，不改变已有画质档位或模型资源。
 性能数据和边界见 `PERFORMANCE_AUDIT.md`。验证入口另包括：
 ```powershell
 .venv\Scripts\python.exe tests\quick_panel_smoke.py
 .venv\Scripts\python.exe tests\live2d_performance.py '路径\model.json' '路径\角色.model3.json'
 .venv\Scripts\python.exe tests\live2d_lifecycle_smoke.py '路径\model.json' '路径\角色.model3.json'
+.venv\Scripts\python.exe tests\live2d_drag_smoke.py '路径\model.json' '路径\角色.model3.json'
+.venv\Scripts\python.exe tests\live2d_picker_smoke.py '路径\model.json' '路径\角色.model3.json'
 ```
 
 ### 构建 Windows 程序

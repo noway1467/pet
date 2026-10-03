@@ -502,6 +502,7 @@ class PetWindow(QWidget):
         self._drag_applied = None
         self._drag_move_timer = QTimer(self)
         self._drag_move_timer.setTimerType(Qt.PreciseTimer)
+        self._drag_move_timer.setSingleShot(True)
         self._drag_move_timer.timeout.connect(self._drag_move_flush)
         # 摸头手势覆盖动画：只动画"手"，不再让宠物本体左右晃动
         self._petting_overlay_t = -1.0
@@ -556,7 +557,6 @@ class PetWindow(QWidget):
         if self.cfg.get("nurture_mode", False):
             QTimer.singleShot(4200, self._nurture_on_start)
 
-        self._hotkey_id = 1
         self._register_hotkey()
 
     # ------------------------------------------------------------------ #
@@ -599,13 +599,15 @@ class PetWindow(QWidget):
     def _build_renderer(self):
         self._renderer_epoch = getattr(self, "_renderer_epoch", 0) + 1
         old = self.renderer
+        # 切换任意形象都要丢弃旧拖动目标，不能让待执行的位移作用到新模型。
+        if hasattr(self, "_drag_move_timer"):
+            self._drag_move_timer.stop()
+        self._drag_off = self._drag_candidate_off = None
+        self._drag_target = self._drag_applied = None
         if isinstance(old, WhalePet) or self.cfg.get("character") == "whale":
             # 换入/换出精灵角色时不能把上一只的下落任务带到新窗口。
             if hasattr(self, "_fall_timer"):
                 self._fall_timer.stop()
-            if hasattr(self, "_drag_move_timer"):
-                self._drag_move_timer.stop()
-            self._drag_off = self._drag_candidate_off = None
         if old is not None:
             try:
                 clear = getattr(old, "clear_frame", None)
@@ -785,6 +787,8 @@ class PetWindow(QWidget):
 
     def _refresh_live2d_alpha_mask(self):
         """强制重建 Live2D 控件自身 alpha mask，裁掉透明区黑色画框。"""
+        if self._drag_off is not None:
+            return
         try:
             fn = getattr(self.renderer, "sync_alpha_mask", None)
             if callable(fn):
@@ -796,6 +800,8 @@ class PetWindow(QWidget):
 
     def _refresh_live2d_input_region(self):
         """重测 Live2D 可交互区域，避免动作/拖动后的旧包围盒把上半身判成透明。"""
+        if self._drag_off is not None:
+            return
         if self.cfg.get("character") == "live2d":
             try:
                 refresh = getattr(self.renderer, "refresh_content_box", None)
@@ -880,32 +886,32 @@ class PetWindow(QWidget):
                         self.renderer.set_facing(-1)
                 self._last_drag_x = gp.x()
                 tgt = gp - self._drag_off
-                # 合并高频 move 事件：记录目标位置，首个事件立即落位、随后按 ~125Hz 节流，
-                # 避免每个鼠标事件都触发分层窗口重合成导致拖动卡顿。
-                self._drag_target = self._clamp_pos(tgt.x(), tgt.y())
+                # 这里只收集最新坐标。工作区查询/边界计算也要合并，不能仅节流 move()，
+                # 否则高回报率鼠标仍会在 GUI 线程逐条查询 Win32 工作区。
+                self._drag_target = (tgt.x(), tgt.y())
                 if not self._drag_move_timer.isActive():
-                    self._drag_applied = self._drag_target
-                    self.move(*self._drag_target)
                     self._drag_move_timer.start(8)
                 return True
             if t == QEvent.MouseButtonRelease and ev.button() == Qt.LeftButton:
                 if self._drag_off is None and self._drag_candidate_off is None:
                     return False
                 was_dragging = self._drag_off is not None
+                if was_dragging:
+                    # 松手事件可能比最后一条 move 更新；在退出拖动状态前精确落位。
+                    tgt = ev.globalPosition().toPoint() - self._drag_off
+                    self._drag_target = (tgt.x(), tgt.y())
+                    self._drag_move_timer.stop()
+                    self._drag_move_flush()
                 self._drag_off = None
                 self._drag_candidate_off = None
                 if was_dragging:
-                    # 落实拖动的最终位置，再停止节流定时器
-                    self._drag_move_timer.stop()
-                    if self._drag_target is not None and self._drag_target != self._drag_applied:
-                        self.move(*self._drag_target)
                     self._drag_target = None
                     self._drag_applied = None
                     self._set_renderer_mask_updates(True)
                     self._set_renderer_render_active(True)
                     self._input_mask_rect_cache = None
-                    QTimer.singleShot(0, self._sync_input_mask)
-                    QTimer.singleShot(180, self._refresh_live2d_input_region)
+                    self._after_renderer(0, self._sync_input_mask)
+                    self._after_renderer(180, self._refresh_live2d_input_region)
                 moved = self._moved
 
                 # 检测是否点击头部（未拖动时）
@@ -1007,20 +1013,18 @@ class PetWindow(QWidget):
         if hasattr(self.renderer, "react"):
             self.renderer.react("grab")
         tgt = gp - self._drag_off
-        self._drag_target = self._clamp_pos(tgt.x(), tgt.y())
-        self._drag_applied = self._drag_target
-        self.move(*self._drag_target)
+        self._drag_target = (tgt.x(), tgt.y())
+        self._drag_move_flush()
+        self._drag_move_timer.start(8)
 
     def _drag_move_flush(self):
-        """拖动节流定时器：把最近一次鼠标目标落实到窗口；没有新位移就转入空闲（停表）。"""
-        if self._drag_off is None:
-            self._drag_move_timer.stop()
+        """每批鼠标事件只做一次边界查询和移动；单次定时器在鼠标静止后自动停表。"""
+        if self._drag_off is None or self._drag_target is None:
             return
-        if self._drag_target is None or self._drag_target == self._drag_applied:
-            self._drag_move_timer.stop()   # 本帧无新位移：停表，下个 move 事件再唤醒
-            return
-        self._drag_applied = self._drag_target
-        self.move(*self._drag_target)
+        target = self._clamp_pos(*self._drag_target)
+        if target != self._drag_applied:
+            self._drag_applied = target
+            self.move(*target)
 
     def _in_head_region(self, click_x, click_y):
         """窗口内坐标 (click_x, click_y) 是否落在"头部摸头范围"：
@@ -1929,8 +1933,7 @@ class PetWindow(QWidget):
         a.setChecked(system.is_autostart())
         a.triggered.connect(self._toggle_autostart)
 
-        a = m.addAction("快捷键 Ctrl+Alt+P：显示/隐藏")
-        a.setEnabled(False)
+        m.addAction("快捷键设置…").triggered.connect(self._show_hotkey_settings)
 
         m.addSeparator()
         m.addAction("关于 / 帮助…").triggered.connect(self._show_about)
@@ -3148,7 +3151,7 @@ class PetWindow(QWidget):
             except Exception:
                 pass
         if enabled:
-            QTimer.singleShot(120, self._refresh_live2d_alpha_mask)
+            self._after_renderer(120, self._refresh_live2d_alpha_mask)
 
     def _detect_edge(self):
         """以"模型可见内容"的边界判断是否贴边：内容碰到屏幕边(≤EDGE_SNAP_DIST)才吸附，
@@ -3335,22 +3338,96 @@ class PetWindow(QWidget):
     #  全局快捷键 + 开机自启
     # ------------------------------------------------------------------ #
     def _register_hotkey(self):
+        self._hotkeys = system.GlobalHotkeys(QApplication.instance(), {
+            "hotkey_toggle_pet": self._toggle_visible,
+            "hotkey_quick_panel": self._show_quick_panel,
+        })
+        bindings, errors = {}, []
+        # 启动时某一个键被占用，不应连带禁用其他可用按键。
+        for key in self._hotkeys.callbacks:
+            candidate = dict(bindings, **{key: self.cfg.get(key, config.DEFAULTS[key])})
+            try:
+                bindings = self._hotkeys.apply(candidate)
+            except ValueError as error:
+                errors.append(str(error))
+        self._hotkey_error = "\n".join(errors)
+        if errors:
+            self.tray.showMessage("快捷键未全部启用", self._hotkey_error + "\n可在托盘的快捷键设置中修改。",
+                                  QSystemTrayIcon.Warning, 5000)
+
+    def _show_hotkey_settings(self):
+        from PySide6.QtGui import QKeySequence
+        from PySide6.QtWidgets import QFormLayout, QKeySequenceEdit, QDialogButtonBox
+        dialog = QDialog(self)
+        dialog.setWindowTitle("快捷键设置")
+        dialog.setMinimumWidth(430)
+        layout = QVBoxLayout(dialog)
+        tip = QLabel("点击输入框后按下组合键；清空可禁用。\n至少包含 Ctrl、Alt 或 Win；保存后立即生效。")
+        tip.setWordWrap(True)
+        layout.addWidget(tip)
+        form = QFormLayout()
+        editors = {}
+        for key, label in (("hotkey_toggle_pet", "显示 / 隐藏宠物"),
+                           ("hotkey_quick_panel", "快捷启动与搜索")):
+            editor = QKeySequenceEdit(QKeySequence(str(self.cfg.get(key, config.DEFAULTS[key]))))
+            editor.setMaximumSequenceLength(1)
+            editor.setClearButtonEnabled(True)
+            editor.setObjectName(key)
+            editors[key] = editor
+            form.addRow(label, editor)
+        layout.addLayout(form)
+        status = QLabel(self._hotkey_error)
+        status.setWordWrap(True)
+        status.setStyleSheet("color:#b42318;")
+        layout.addWidget(status)
+        reset = QPushButton("恢复默认组合")
+        reset.clicked.connect(lambda: [e.setKeySequence(QKeySequence(config.DEFAULTS[k]))
+                                       for k, e in editors.items()])
+        layout.addWidget(reset)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Save).setText("保存")
+        buttons.button(QDialogButtonBox.Cancel).setText("取消")
+        buttons.button(QDialogButtonBox.Cancel).setStyleSheet("background:#e2e8f0;color:#334e68;")
+        buttons.rejected.connect(dialog.reject)
+        def save():
+            values = {k: e.keySequence().toString(QKeySequence.PortableText) for k, e in editors.items()}
+            try:
+                values = self._hotkeys.apply(values)
+            except ValueError as error:
+                status.setText(str(error))
+                return
+            self.cfg.update(values)
+            config.save(self.cfg)
+            self._hotkey_error = ""
+            dialog.accept()
+        buttons.accepted.connect(save)
+        layout.addWidget(buttons)
+        def capture_sequence(text):
+            focus = QApplication.focusWidget()
+            for editor in editors.values():
+                if focus is editor or (focus is not None and editor.isAncestorOf(focus)):
+                    editor.setKeySequence(QKeySequence(text))
+                    break
+        self._hotkeys.capture_sequence = capture_sequence
+        self._hotkeys.suspended = True
         try:
-            import ctypes
-            MOD_ALT, MOD_CONTROL, VK_P = 0x0001, 0x0002, 0x50
-            ctypes.windll.user32.RegisterHotKey(
-                int(self.winId()), self._hotkey_id, MOD_CONTROL | MOD_ALT, VK_P)
-        except Exception:
-            pass
+            self._exec_centered_dialog(dialog)
+        finally:
+            self._hotkeys.capture_sequence = None
+            self._hotkeys.suspended = False
+            dialog.deleteLater()
+
+    def closeEvent(self, event):
+        hotkeys = getattr(self, '_hotkeys', None)
+        if hotkeys is not None:
+            hotkeys.close()
+        super().closeEvent(event)
 
     def nativeEvent(self, eventType, message):
         try:
             if eventType in ("windows_generic_MSG", b"windows_generic_MSG"):
                 import ctypes.wintypes
                 msg = ctypes.wintypes.MSG.from_address(int(message))
-                if msg.message == 0x0312 and msg.wParam == self._hotkey_id:  # WM_HOTKEY
-                    self._toggle_visible()
-                    return True, 0
                 if msg.message == 0x0084:  # WM_NCHITTEST
                     import ctypes
                     x = ctypes.c_short(int(msg.lParam) & 0xFFFF).value
@@ -4479,6 +4556,7 @@ class PetWindow(QWidget):
 
     def _quit(self):
         self._save_pos()
+        self._hotkeys.close()
         self.renderer.shutdown()
         self.tray.hide()
         QApplication.quit()
@@ -4514,7 +4592,7 @@ class PetWindow(QWidget):
 
             "<p>🎯 <b>简单易用</b><br>"
             "拖动移动、点击头部摸头、右键打开菜单<br>"
-            "快捷键 <b>Ctrl+Alt+P</b> 显示/隐藏</p>"
+            "全局快捷键可在右键 / 托盘菜单的 <b>快捷键设置</b> 中自定义</p>"
 
             "<p>💾 <b>智能记忆</b><br>"
             "自动记住每个模型的位置和设置</p>")
@@ -4816,7 +4894,7 @@ class Live2DPicker(QDialog):
     """带实时预览的 Live2D 模型选择器：左侧可搜索列表，右侧实时预览 + 构图微调。"""
 
     SIZE_MIN, SIZE_MAX = 120, 520      # 显示尺寸(在桌面上的窗口边长 px)滑块范围
-    PREVIEW_DEBOUNCE_MS = 420          # 选中后稍等再加载预览：连续翻列表不会每个都重载，杜绝卡死
+    PREVIEW_DEBOUNCE_MS = 120          # 连续翻列表仍合并，但不再给每次选择固定加近半秒等待
 
     def __init__(self, parent, models, current, views, rescan=None, size_px=300,
                  pinned=None, feature_provider=None):
@@ -4840,6 +4918,9 @@ class Live2DPicker(QDialog):
         self._pending_path = None                  # 防抖：待加载预览的模型路径
         self._preview_generation = 0               # 防止旧预览的延迟回调误操作新预览
         self._closing = False
+        self._preview_cfg = getattr(parent, 'cfg', {})
+        limit = self._preview_cfg.get('live2d_preview_texture_limit', 1024)
+        self._preview_texture_limit = limit if limit in (0, 1024, 2048) else 1024
         self._preview_timer = QTimer(self)         # 选择稳定后才真正加载预览
         self._preview_timer.setSingleShot(True)
         self._preview_timer.timeout.connect(self._do_load_preview)
@@ -4905,6 +4986,16 @@ class Live2DPicker(QDialog):
         # 右：预览 + 构图按钮 + 确定取消
         right = QVBoxLayout()
         right.setSpacing(10)
+        quality_row = QHBoxLayout()
+        quality_row.addWidget(QLabel("预览画质"))
+        self.preview_quality = QComboBox()
+        for label, limit in (("快速 1024", 1024), ("清晰 2048", 2048), ("原始贴图（较慢）", 0)):
+            self.preview_quality.addItem(label, limit)
+        self.preview_quality.setCurrentIndex(self.preview_quality.findData(self._preview_texture_limit))
+        self.preview_quality.setToolTip("只影响管理界面预览；缓存副本不会修改源文件或桌面宠物画质")
+        self.preview_quality.currentIndexChanged.connect(self._change_preview_quality)
+        quality_row.addWidget(self.preview_quality, 1)
+        right.addLayout(quality_row)
         self.preview_box = QWidget()
         self.preview_box.setFixedSize(360, 470)
         self.preview_box.setStyleSheet(
@@ -5001,6 +5092,8 @@ class Live2DPicker(QDialog):
         cancel.setStyleSheet("background:#e2e8f0;color:#334e68;")
         cancel.clicked.connect(self.reject)
         ok = QPushButton("应用")
+        self.apply_btn = ok
+        self.apply_btn.setEnabled(False)
         ok.clicked.connect(self._apply)
         btns.addWidget(cancel)
         btns.addWidget(ok)
@@ -5249,11 +5342,15 @@ class Live2DPicker(QDialog):
                 return
 
     def _on_select(self, cur, _prev):
-        """选中变化：立刻清掉旧预览并显示"加载中"，真正加载推迟到选择稳定后(防抖)。
-        这样连续上下翻列表不会每个都去 new 一个 Live2D 渲染器，从根本上消除卡死。"""
+        """先暂停旧预览，选择稳定后再释放；快速切回原项无需重载整套模型。"""
         path = cur.data(Qt.UserRole) if cur is not None else None
         self._pending_path = path
+        self._sel_path = None
+        self.apply_btn.setEnabled(False)
         self._preview_timer.stop()
+        if self._preview is not None:
+            self._preview.set_render_active(False)
+            self._preview.hide()
         if path is None:                 # 选到分组标题等无路径项：只清空
             self._clear_preview()
             return
@@ -5274,6 +5371,7 @@ class Live2DPicker(QDialog):
     def _clear_preview(self):
         """清理预览渲染器，释放OpenGL资源和内存。"""
         self._preview_generation += 1
+        self.apply_btn.setEnabled(False)
         preview = self._preview
         self._preview = None
         self._preview_path = None
@@ -5307,7 +5405,14 @@ class Live2DPicker(QDialog):
             QTimer.singleShot(0, lambda: QApplication.sendPostedEvents(None, QEvent.DeferredDelete))
 
     def _load_preview(self, path):
-        """加载预览：直接加载，不延迟。"""
+        """同一模型复用已完成的预览，跨模型仍隔离 OpenGL 生命周期。"""
+        if self._preview is not None and self._preview_path == path:
+            self._sel_path = path
+            self._preview.show()
+            self._preview.set_render_active(True)
+            if self._preview._frame is not None:
+                self._preview_frame_ready(self._preview)
+            return
         v = self._apply_picker_state(path)
         # 预览区比桌面实模更容易受旧 FBO/旧模型状态影响，统一走“清旧 -> 重建”，
         # 不再复用旧 preview 控件热切模型，避免出现侧边残影、镜像条、初始位置偏移。
@@ -5315,7 +5420,7 @@ class Live2DPicker(QDialog):
         self._sync_sliders()
         self._queue_preview_spawn(path)
 
-    def _queue_preview_spawn(self, path, delay=30):
+    def _queue_preview_spawn(self, path, delay=0):
         generation = self._preview_generation
         QTimer.singleShot(delay, lambda p=path, g=generation: self._spawn_preview_if_current(p, g))
 
@@ -5356,8 +5461,9 @@ class Live2DPicker(QDialog):
             pv = create_live2d_pet(path, preview_size, self._zoom, self._xoff, self._yoff,
                                    self.preview_view, ratio=self._ratio, preview_mode=True,
                                    canvas_scale=self._canvas_scale,
-                                   texture_limit=getattr(self.parent(), 'cfg', {}).get("live2d_texture_limit", 2048))
+                                   texture_limit=self._preview_texture_limit)
             pv.set_follow(False)
+            pv.first_frame_ready.connect(lambda _pv=pv: self._preview_frame_ready(_pv))
             pv.on_error = lambda *a, _pv=pv: self._preview_failed(_pv)
             pv.on_resized = lambda *a, _pv=pv: self._fit_preview(_pv)
             self.preview_view_lay.addWidget(pv, 0, Qt.AlignCenter)
@@ -5365,17 +5471,28 @@ class Live2DPicker(QDialog):
             self._preview = pv
             self._preview_path = path
             self._sel_path = path
-            self.hint.hide()
-            # 预览新建后补一轮“复位态”同步，确保内部画布/外层 QWidget 从干净状态起步，
-            # 避免某些模型首帧右侧挂出细条残影，只有点复位才恢复。
-            QTimer.singleShot(0, lambda _pv=pv: (
-                _pv is self._preview and _pv.set_view(self._zoom, self._xoff, self._yoff)
-            ))
+            # 构造函数已经接收完整构图；重复 set_view 会清帧并额外丢弃两帧。
         except Exception as e:  # noqa: BLE001
             self._sel_path = None
             self._preview_path = None
             self.hint.setText("无法预览：%s" % e)
             self.hint.show()
+
+    def _preview_frame_ready(self, preview):
+        if (self._closing or preview is not self._preview
+                or self._preview_path != self._pending_path):
+            return
+        self._sel_path = self._preview_path
+        self.hint.hide()
+        self.apply_btn.setEnabled(True)
+
+    def _change_preview_quality(self):
+        self._preview_texture_limit = self.preview_quality.currentData()
+        self._preview_cfg['live2d_preview_texture_limit'] = self._preview_texture_limit
+        if hasattr(self.parent(), 'cfg'):
+            config.save(self._preview_cfg)
+        self._clear_preview()
+        self._on_select(self.listw.currentItem(), None)
 
     def _fit_preview(self, preview=None):
         """预览随模型画布比例变化后，缩到不超过预览框。"""
@@ -5532,7 +5649,8 @@ class Live2DPicker(QDialog):
         self._sync_sliders()
 
     def _apply(self):
-        if self._sel_path:
+        if (self._sel_path and self._sel_path == self._pending_path
+                and self._preview is not None and self._preview._frame is not None):
             self.selected_path = self._sel_path
             self.zoom, self.xoff, self.yoff = self._zoom, self._xoff, self._yoff
             self.ratio = self._ratio
